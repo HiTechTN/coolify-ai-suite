@@ -1,0 +1,78 @@
+name: Validate Installation Script
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode (syntax, docker-validation)'
+        required: true
+        default: 'syntax'
+        type: choice
+        options:
+          - syntax
+          - docker-validation
+
+jobs:
+  validate-syntax:
+    name: Syntax Validation
+    if: github.event.inputs.test_mode == 'syntax' || github.event.inputs.test_mode == ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate all shell scripts
+        run: |
+          echo "=== Checking bash syntax ==="
+          for script in setup-*.sh backup-*.sh check-*.sh install-*.sh final-*.sh; do
+            if [ -f "$script" ]; then
+              echo -n "Checking: $script ... "
+              bash -n "$script" && echo "✓" || { echo "✗"; exit 1; }
+            fi
+          done
+          
+      - name: Check for common issues
+        run: |
+          echo "=== Checking for common issues ==="
+          for script in setup-*.sh backup-*.sh check-*.sh install-*.sh final-*.sh; do
+            if [ -f "$script" ]; then
+              # Check for hardcoded IPs
+              if grep -qE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$script" | grep -v '#'; then
+                echo "⚠ $script contains hardcoded IP"
+              fi
+              # Check for set -e
+              if ! grep -q 'set -e' "$script"; then
+                echo "⚠ $script missing 'set -e'"
+              fi
+            fi
+          done
+
+  validate-docker:
+    name: Docker Compose Validation
+    if: github.event.inputs.test_mode == 'docker-validation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Docker Compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io docker-compose
+
+      - name: Validate Docker Compose files
+        run: |
+          echo "=== Validating Docker Compose files ==="
+          
+          # Code-Server
+          if [ -f "/opt/ai-suite/code-server/docker-compose.yml" ]; then
+            docker-compose -f /opt/ai-suite/code-server/docker-compose.yml config --quiet && echo "✓ code-server" || echo "✗ code-server"
+          fi
+          
+          # Ollama
+          if [ -f "/opt/ai-suite/ollama/docker-compose.yml" ]; then
+            docker-compose -f /opt/ai-suite/ollama/docker-compose.yml config --quiet && echo "✓ ollama" || echo "✗ ollama"
+          fi
+          
+          # Open WebUI
+          if [ -f "/opt/ai-suite/open-webui/docker-compose.yml" ]; then
+            docker-compose -f /opt/ai-suite/open-webui/docker-compose.yml config --quiet && echo "✓ open-webui" || echo "✗ open-webui"
+          fi

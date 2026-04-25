@@ -1,0 +1,27 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Scripts shell
+*.sh text eol=lf
+
+# Scripts Docker
+docker-compose*.yml text eol=lf
+
+# Documentation
+*.md text eol=lf
+
+# JSON files
+*.json text eol=lf
+
+# Scripts batch (si existants)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary

@@ -1,0 +1,55 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+/var/log/
+
+# Backups
+/opt/backups/
+*.tar.gz
+*.zip
+
+# Docker volumes (ne pas versionner)
+ollama-data/
+open-webui-data/
+
+# Configurations personnelles
+/kimi_agent_let's_create/app/.env
+
+# Node modules (gros dossier)
+Kimi_Agent_Let's create/app/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+*~
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Secrets and credentials (déjà dans .env mais sécurité supplémentaire)
+*password*
+*secret*
+*credential*
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# GitHub Actions cache
+.node_modules/
+
+# ZIP archives
+*.zip

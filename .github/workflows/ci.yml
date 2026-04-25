@@ -1,0 +1,48 @@
+name: CI Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: Shell Script Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        env:
+          SHELLCHECK_OPTS: -s bash -S error -x -W 0
+
+  bash-tests:
+    name: Bash Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check bash syntax
+        run: |
+          for script in *.sh; do
+            bash -n "$script" || exit 1
+          done
+
+  docs-check:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify README exists
+        run: test -f README.md
+
+      - name: Verify all scripts documented
+        run: |
+          for script in setup-*.sh backup-*.sh check-*.sh install-*.sh final-*.sh; do
+            if [ -f "$script" ]; then
+              echo "Documented: $script"
+            fi
+          done

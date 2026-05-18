@@ -37,7 +37,7 @@ jobs:
         id: changelog
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "main..HEAD" 2>/dev/null || echo "- Initial release v$VERSION")
+          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "main..HEAD" 2>/dev/null || echo "- $VERSION")
           echo "changelog<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGELOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -54,6 +54,7 @@ jobs:
       - name: Build Release Artifact
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
+          ls -la ..
           tar -czf "coolify-ai-suite-${VERSION}.tar.gz" \
             --exclude='.git' \
             --exclude='.opencode' \
@@ -63,7 +64,7 @@ jobs:
             --exclude='*.db-*' \
             --exclude='Kimi_Agent*' \
             --exclude='insrtall*' \
-            -C .. "Coolify AI Suite"
+            .
 
       - name: Upload Release Artifact
         run: |

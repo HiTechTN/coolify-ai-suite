@@ -45,12 +45,14 @@ Le script interactif vous guide :
 | `setup-domain.sh` | Ajouter un nom de domaine + SSL à une installation existante |
 | `setup-traefik-only.sh` | Ajouter HTTPS/Traefik uniquement |
 | `check-ai-suite-status.sh` | Vérifier l'état des services |
+| `check-public-ip.sh` | Surveiller l'IP publique et la cohérence DNS |
 | `install-ollama-models.sh` | Télécharger des modèles IA (qwen2.5-coder, llama3.2, etc.) |
 | `backup-ai-suite.sh` | Sauvegarder / restaurer l'installation |
 
 ```bash
 # Exemples
 sudo ./check-ai-suite-status.sh
+sudo ./check-public-ip.sh
 sudo ./install-ollama-models.sh
 sudo ./backup-ai-suite.sh backup
 sudo ./backup-ai-suite.sh restore backup_20260425.tar.gz
@@ -121,6 +123,43 @@ Fichier `.env` généré automatiquement (cf. `.env.example`).
 | `OLLAMA_PORT` | Port Ollama | `11434` |
 | `BACKUP_DIR` | Dossier de sauvegarde | `/opt/backups/ai-suite` |
 | `RETENTION_DAYS` | Jours de rétention | `7` |
+| `FIXED_IP` | IP fixe de référence pour la surveillance | *(détection auto)* |
+| `DNS_SERVERS` | Serveurs DNS pour la résolution | `dns1.tunet.tn dns2.tunet.tn` |
+
+---
+
+## Surveillance IP publique
+
+Le script `check-public-ip.sh` surveille l'IP publique du serveur et vérifie sa cohérence avec l'enregistrement DNS du domaine.
+
+```bash
+# Vérification simple
+sudo ./check-public-ip.sh
+
+# Vérification + mise à jour de la config locale
+sudo ./check-public-ip.sh --fix
+
+# Mode silencieux pour cron (journalisation uniquement)
+sudo ./check-public-ip.sh --cron
+```
+
+### Installation automatique (cron)
+
+```bash
+# Vérification toutes les heures
+echo "0 * * * * root $(pwd)/check-public-ip.sh --cron" | sudo tee /etc/cron.d/ai-suite-ipcheck
+```
+
+### IP fixe connue
+
+Si votre domaine a une IP fixe, configurez-la dans `.env` :
+
+```env
+FIXED_IP=196.203.63.49
+DNS_SERVERS=dns1.tunet.tn dns2.tunet.tn
+```
+
+Le script compare l'IP publique du serveur avec cette référence et vous alerte en cas de divergence.
 
 ---
 

@@ -13,12 +13,16 @@ Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr-FR/1.0.
 - Routage Traefik avec sous-domaines: `code.*`, `chat.*`, `ollama.*`, `coolify.*`
 - Sous-domaines personnalisables pour chaque service
 
+### Ajouté
+- Script `check-public-ip.sh` pour surveiller l'IP publique et la cohérence DNS
+- Support des serveurs DNS personnalisables (dns1.tunet.tn, dns2.tunet.tn)
+
 ### Modifié
 - `setup-ai-suite.sh` (v2.2): support domaine avec fallback `.local`
 - `setup-traefik-only.sh` (v1.1): support domaine avec prompt interactif
 - `final-summary.sh` (v2.1): affichage URLs domaine
-- `.env.example`: variables `DOMAIN` et `SSL_EMAIL`
-- Documentation README avec section configuration domaine
+- `.env.example`: variables `DOMAIN`, `SSL_EMAIL`, `FIXED_IP`, `DNS_SERVERS`
+- Documentation README avec sections domaine et surveillance IP
 
 ## [2.1.0] - 2026-04-25
 

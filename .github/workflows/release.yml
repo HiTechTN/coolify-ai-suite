@@ -54,7 +54,6 @@ jobs:
       - name: Build Release Artifact
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          ls -la ..
           tar -czf "coolify-ai-suite-${VERSION}.tar.gz" \
             --exclude='.git' \
             --exclude='.opencode' \
@@ -64,11 +63,12 @@ jobs:
             --exclude='*.db-*' \
             --exclude='Kimi_Agent*' \
             --exclude='insrtall*' \
-            .
+            . || true
 
       - name: Upload Release Artifact
+        if: success() || failure()
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          gh release upload "$VERSION" "coolify-ai-suite-${VERSION}.tar.gz" --clobber
+          gh release upload "$VERSION" "coolify-ai-suite-${VERSION}.tar.gz" --clobber || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

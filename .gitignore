@@ -51,5 +51,16 @@ build/
 # GitHub Actions cache
 .node_modules/
 
+# Agent directories
+.opencode/
+.qwen/
+.kimi/
+
+# Install logs
+insrtall*
+
+# Subprojects
+Kimi_Agent_Let's create/
+
 # ZIP archives
 *.zip

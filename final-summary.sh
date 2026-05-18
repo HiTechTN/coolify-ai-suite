@@ -1,6 +1,6 @@
 #!/bin/bash
 # final-summary.sh - Résumé final de l'installation Coolify AI Suite
-# Version: 2.0
+# Version: 2.1
 
 set -euo pipefail
 
@@ -23,6 +23,11 @@ readonly OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 readonly CODE_SERVER_PORT="${CODE_SERVER_PORT:-8443}"
 readonly OPEN_WEBUI_PORT="${OPEN_WEBUI_PORT:-3000}"
 readonly COOLIFY_PORT="${COOLIFY_PORT:-8000}"
+DOMAIN="${DOMAIN:-}"
+
+# Charger .env si présent
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
 
 # ============================================
 # FONCTIONS
@@ -32,7 +37,7 @@ check_service() {
     local port="$2"
     local status
     status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$port/" 2>/dev/null || echo "000")
-    
+
     if echo "$status" | grep -qE "200|302"; then
         echo -e "  ${GREEN}✓${NC} $name: http://${IP}:${port}"
         return 0
@@ -78,6 +83,19 @@ check_service "Open WebUI" "$OPEN_WEBUI_PORT"
 echo ""
 
 # ============================================
+# URLs
+# ============================================
+if [[ -n "${DOMAIN:-}" ]]; then
+    echo -e "${BOLD}${CYAN}🌐 ACCÈS PAR DOMAINE :${NC}"
+    echo -e "────────────────────────────────────────────────────────"
+    echo -e "  https://coolify.${DOMAIN}"
+    echo -e "  https://code.${DOMAIN}"
+    echo -e "  https://chat.${DOMAIN}"
+    echo -e "  https://ollama.${DOMAIN}"
+    echo ""
+fi
+
+# ============================================
 # DOSSIERS
 # ============================================
 echo -e "${BOLD}${CYAN}📁 DOSSIERS DE CONFIGURATION :${NC}"
@@ -95,6 +113,7 @@ echo -e "───────────────────────�
 echo -e "  check-ai-suite-status.sh  - Vérifier l'état des services"
 echo -e "  install-ollama-models.sh  - Installer les modèles IA"
 echo -e "  backup-ai-suite.sh       - Sauvegarde / restauration"
+echo -e "  setup-domain.sh          - Configurer un nom de domaine"
 echo -e "  README.md                - Documentation complète"
 echo ""
 

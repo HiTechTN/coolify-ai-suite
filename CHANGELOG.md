@@ -4,6 +4,22 @@ Tous les changements notables de ce projet seront documentés dans ce fichier.
 
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr-FR/1.0.0/).
 
+## [2.2.0] - 2026-05-18
+
+### Ajouté
+- Support des noms de domaine réels (ex: `hitech.tn`)
+- Script `setup-domain.sh` pour configurer un domaine sur installation existante
+- Configuration automatique Let's Encrypt avec le domaine
+- Routage Traefik avec sous-domaines: `code.*`, `chat.*`, `ollama.*`, `coolify.*`
+- Sous-domaines personnalisables pour chaque service
+
+### Modifié
+- `setup-ai-suite.sh` (v2.2): support domaine avec fallback `.local`
+- `setup-traefik-only.sh` (v1.1): support domaine avec prompt interactif
+- `final-summary.sh` (v2.1): affichage URLs domaine
+- `.env.example`: variables `DOMAIN` et `SSL_EMAIL`
+- Documentation README avec section configuration domaine
+
 ## [2.1.0] - 2026-04-25
 
 ### Ajouté

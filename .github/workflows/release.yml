@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v2.1.0)'
+        description: 'Version tag (e.g., v2.2.0)'
         required: true
-        default: 'v2.1.0'
+        default: 'v2.2.0'
 
 jobs:
   release:
@@ -17,8 +17,7 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.release.outputs.version }}
-      changelog: ${{ steps.release.outputs.changelog }}
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,7 +27,7 @@ jobs:
         id: version
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            VERSION="${{ github.events.inputs.version }}"
+            VERSION="${{ github.event.inputs.version }}"
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
@@ -38,26 +37,37 @@ jobs:
         id: changelog
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "main..HEAD" 2>/dev/null || echo "- Initial release")
-          echo "changelog=$CHANGELOG" >> $GITHUB_OUTPUT
-          
+          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "main..HEAD" 2>/dev/null || echo "- Initial release v$VERSION")
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Create Release
-        id: release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           body: ${{ steps.changelog.outputs.changelog }}
-          draft: true
+          draft: false
+          generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TAG_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  validate:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate release
+      - name: Build Release Artifact
         run: |
-          echo "Release '${{ needs.release.outputs.version }}' created as draft!"
-          echo "Changelog:"
-          echo '${{ needs.release.outputs.changelog }}'
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          tar -czf "coolify-ai-suite-${VERSION}.tar.gz" \
+            --exclude='.git' \
+            --exclude='.opencode' \
+            --exclude='.qwen' \
+            --exclude='node_modules' \
+            --exclude='*.db' \
+            --exclude='*.db-*' \
+            --exclude='Kimi_Agent*' \
+            --exclude='insrtall*' \
+            -C .. "Coolify AI Suite"
+
+      - name: Upload Release Artifact
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          gh release upload "$VERSION" "coolify-ai-suite-${VERSION}.tar.gz" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

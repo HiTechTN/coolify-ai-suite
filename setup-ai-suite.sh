@@ -1,8 +1,8 @@
 #!/bin/bash
 # setup-ai-suite.sh - Script d'installation Coolify AI Suite avec HTTPS
 # Author: Mohamed Azmi KAANICHE
-# Version: 2.1
-# Date: 2026-04-25
+# Version: 2.2
+# Date: 2026-05-18
 
 set -euo pipefail
 
@@ -31,6 +31,8 @@ readonly TRAEFIK_HTTPS_PORT="${TRAEFIK_HTTPS_PORT:-443}"
 readonly NETWORK_NAME="ai-suite"
 readonly AI_SUITE_DIR="/opt/ai-suite"
 readonly TRAEFIK_DIR="/opt/ai-suite/traefik"
+export DOMAIN="${DOMAIN:-}"
+export SSL_EMAIL="${SSL_EMAIL:-admin@example.com}"
 
 # ============================================
 # FONCTIONS UTILITAIRES
@@ -204,6 +206,13 @@ configure_custom() {
     echo -e "${BOLD}Configuration personnalisée${NC}"
     echo ""
     
+    read -p "Nom de domaine (ex: hitech.tn, laisser vide pour .local): " input
+    if [[ -n "$input" ]]; then
+        export DOMAIN="$input"
+        read -p "Email Let's Encrypt (ex: admin@${DOMAIN}): " email_input
+        export SSL_EMAIL="${email_input:-admin@${DOMAIN}}"
+    fi
+    
     read -p "Port Coolify (défaut: $COOLIFY_PORT): " input
     [[ -n "$input" ]] && export COOLIFY_PORT="$input"
     
@@ -277,8 +286,17 @@ setup_traefik() {
     
     mkdir -p "$TRAEFIK_DIR"/{config,acme,logs}
     
+    local domain="${DOMAIN:-}"
+    local tld="${domain:-local}"
+    local host_rule
+    if [[ -n "$domain" ]]; then
+        host_rule='Host(`code.'"${domain}"'`) || Host(`openwebui.'"${domain}"'`) || Host(`ollama.'"${domain}"'`)'
+    else
+        host_rule='Host(`code-server.local`) || Host(`openwebui.local`) || Host(`ollama.local`)'
+    fi
+
     # Configuration Traefik
-    cat > "$TRAEFIK_DIR/traefik.yml" << 'EOF'
+    cat > "$TRAEFIK_DIR/traefik.yml" << EOF
 global:
   checkNewVersion: true
   sendAnonymousUsage: false
@@ -308,7 +326,7 @@ entryPoints:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: admin@example.com
+      email: ${SSL_EMAIL}
       storage: /acme/acme.json
       httpChallenge:
         entryPoint: web
@@ -317,7 +335,7 @@ providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
-    network: ai-suite
+    network: ${NETWORK_NAME}
   file:
     directory: /config
     watch: true
@@ -328,7 +346,7 @@ EOF
 http:
   routers:
     code-server:
-      rule: "Host(\`code-server.local\`)"
+      rule: "Host(\`code.${tld}\`)"
       service: code-server
       entryPoints:
         - websecure
@@ -336,7 +354,7 @@ http:
         certResolver: letsencrypt
 
     open-webui:
-      rule: "Host(\`openwebui.local\`)"
+      rule: "Host(\`chat.${tld}\`)"
       service: open-webui
       entryPoints:
         - websecure
@@ -344,7 +362,7 @@ http:
         certResolver: letsencrypt
 
     ollama:
-      rule: "Host(\`ollama.local\`)"
+      rule: "Host(\`ollama.${tld}\`)"
       service: ollama
       entryPoints:
         - websecure
@@ -377,7 +395,7 @@ tls:
 EOF
 
     # Docker Compose Traefik
-    cat > "$TRAEFIK_DIR/docker-compose.yml" << 'EOF'
+    cat > "$TRAEFIK_DIR/docker-compose.yml" << EOF
 version: '3.8'
 services:
   traefik:
@@ -395,15 +413,15 @@ services:
       - ./acme:/acme
       - ./logs:/var/log/traefik
     networks:
-      - ai-suite
+      - ${NETWORK_NAME}
     restart: unless-stopped
     environment:
-      - TZ=Europe/Paris
+      - TZ=Africa/Tunis
     labels:
       - "traefik.enable=true"
 
 networks:
-  ai-suite:
+  ${NETWORK_NAME}:
     external: true
 EOF
 
@@ -419,6 +437,8 @@ setup_services() {
     mkdir -p "$AI_SUITE_DIR"/{code-server,ollama,open-webui}
     
     # Code-Server avec labels Traefik
+    local tld="${DOMAIN:-local}"
+
     cat > "$AI_SUITE_DIR/code-server/docker-compose.yml" << EOF
 version: '3.8'
 services:
@@ -428,38 +448,41 @@ services:
     environment:
       - PUID=1000
       - PGID=1000
-      - TZ=Europe/Paris
+      - TZ=Africa/Tunis
       - PASSWORD=${CODE_SERVER_PASSWORD:-$(openssl rand -base64 24)}
       - SUDO_PASSWORD=${CODE_SERVER_PASSWORD:-changeme_now}
+      - DEFAULT_WORKSPACE=/config/workspace
     volumes:
       - ./config:/config
       - ./projects:/projects
     networks:
-      - ai-suite
+      - ${NETWORK_NAME}
     restart: unless-stopped
     mem_limit: 2g
     mem_reservation: 512m
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.code-server.rule=Host(\`code-server.local\`)"
+      - "traefik.http.routers.code-server.rule=Host(\`code.${tld}\`)"
       - "traefik.http.routers.code-server.tls=true"
       - "traefik.http.services.code-server.loadbalancer.server.url=http://code-server:8443"
 networks:
-  ai-suite:
+  ${NETWORK_NAME}:
     external: true
 EOF
 
     # Ollama
+    local tld="${DOMAIN:-local}"
+
     cat > "$AI_SUITE_DIR/ollama/docker-compose.yml" << EOF
 version: '3.8'
 services:
   ollama:
-    image: ollama/ollama:pro
+    image: ollama/ollama:latest
     container_name: ollama
     volumes:
-      - ollama-data:/root/.ollama
+      - ollama:/root/.ollama
     networks:
-      - ai-suite
+      - ${NETWORK_NAME}
     restart: unless-stopped
     environment:
       - OLLAMA_HOST=0.0.0.0
@@ -471,17 +494,19 @@ services:
           memory: 4g
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.ollama.rule=Host(\`ollama.local\`)"
+      - "traefik.http.routers.ollama.rule=Host(\`ollama.${tld}\`)"
       - "traefik.http.routers.ollama.tls=true"
 networks:
-  ai-suite:
+  ${NETWORK_NAME}:
     external: true
 volumes:
-  ollama-data:
+  ollama:
     driver: local
 EOF
 
     # Open WebUI avec labels Traefik
+    local tld="${DOMAIN:-local}"
+
     cat > "$AI_SUITE_DIR/open-webui/docker-compose.yml" << EOF
 version: '3.8'
 services:
@@ -491,23 +516,25 @@ services:
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEBUI_SECRET_KEY=${WEBUI_SECRET:-$(openssl rand -hex 32)}
+      - ENABLE_SIGNUP=false
+      - ENABLE_COMMUNITY_SHARING=false
     volumes:
-      - open-webui-data:/app/backend/data
+      - open-webui:/app/backend/data
     networks:
-      - ai-suite
+      - ${NETWORK_NAME}
     restart: unless-stopped
     depends_on:
       - ollama
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.open-webui.rule=Host(\`openwebui.local\`)"
+      - "traefik.http.routers.open-webui.rule=Host(\`chat.${tld}\`)"
       - "traefik.http.routers.open-webui.tls=true"
       - "traefik.http.services.open-webui.loadbalancer.server.url=http://open-webui:8080"
 networks:
-  ai-suite:
+  ${NETWORK_NAME}:
     external: true
 volumes:
-  open-webui-data:
+  open-webui:
     driver: local
 EOF
 
@@ -552,6 +579,8 @@ EOF
 # ============================================
 export_config() {
     cat > "$SCRIPT_DIR/.env" << EOF
+DOMAIN=${DOMAIN:-}
+SSL_EMAIL=${SSL_EMAIL:-admin@example.com}
 OLLAMA_PORT=$OLLAMA_PORT
 CODE_SERVER_PORT=$CODE_SERVER_PORT
 OPEN_WEBUI_PORT=$OPEN_WEBUI_PORT
@@ -560,6 +589,8 @@ CODE_SERVER_PASSWORD=$CODE_SERVER_PASSWORD
 WEBUI_SECRET=$WEBUI_SECRET
 TRAEFIK_HTTP_PORT=$TRAEFIK_HTTP_PORT
 TRAEFIK_HTTPS_PORT=$TRAEFIK_HTTPS_PORT
+NETWORK_NAME=$NETWORK_NAME
+AI_SUITE_DIR=$AI_SUITE_DIR
 EOF
     chmod 600 "$SCRIPT_DIR/.env"
     log_success "Configuration exportée dans .env"
@@ -577,21 +608,38 @@ show_summary() {
     echo -e "${GREEN}✓ Installation terminée avec succès !${NC}"
     echo -e "${GREEN}=============================================${NC}"
     echo ""
-    echo -e "${BOLD}URLs HTTP (non sécurisé) :${NC}"
-    echo -e "  • Coolify:      http://${ip}:${COOLIFY_PORT}"
-    echo -e "  • Code-Server: http://${ip}:${CODE_SERVER_PORT}"
-    echo -e "  • Open WebUI:  http://${ip}:${OPEN_WEBUI_PORT}"
-    echo -e "  • Ollama API:  http://${ip}:${OLLAMA_PORT}"
-    echo ""
-    echo -e "${BOLD}URLs HTTPS (Traefik) :${NC}"
-    echo -e "  • http://${ip} (redirection vers HTTPS)"
-    echo -e "  • Dashboard Traefik: http://${ip}:8080"
-    echo ""
-    echo -e "${BOLD}${YELLOW}Fichier hosts à modifier sur les clients :${NC}"
-    echo -e "  ${ip} code-server.local openwebui.local ollama.local"
-    echo ""
+    
+    if [[ -n "${DOMAIN:-}" ]]; then
+        echo -e "${BOLD}URLs (HTTPS automatique Let's Encrypt) :${NC}"
+        echo -e "  • Coolify:      https://coolify.${DOMAIN}"
+        echo -e "  • Code-Server:  https://code.${DOMAIN}"
+        echo -e "  • Open WebUI:   https://chat.${DOMAIN}"
+        echo -e "  • Ollama API:   https://ollama.${DOMAIN}"
+        echo ""
+        echo -e "${BOLD}Dashboard Traefik :${NC} http://${ip}:8080"
+        echo ""
+        echo -e "${BOLD}${YELLOW}Configuration DNS requise :${NC}"
+        echo -e "  A      ${DOMAIN}        → ${ip}"
+        echo -e "  A      *.${DOMAIN}      → ${ip}"
+        echo ""
+    else
+        echo -e "${BOLD}URLs HTTP (non sécurisé) :${NC}"
+        echo -e "  • Coolify:      http://${ip}:${COOLIFY_PORT}"
+        echo -e "  • Code-Server: http://${ip}:${CODE_SERVER_PORT}"
+        echo -e "  • Open WebUI:  http://${ip}:${OPEN_WEBUI_PORT}"
+        echo -e "  • Ollama API:  http://${ip}:${OLLAMA_PORT}"
+        echo ""
+        echo -e "${BOLD}URLs HTTPS (Traefik) :${NC}"
+        echo -e "  • http://${ip} (redirection vers HTTPS)"
+        echo -e "  • Dashboard Traefik: http://${ip}:8080"
+        echo ""
+        echo -e "${BOLD}${YELLOW}Fichier hosts à modifier sur les clients :${NC}"
+        echo -e "  ${ip} code-server.local openwebui.local ollama.local"
+        echo ""
+    fi
+    
     echo -e "${BOLD}${YELLOW}Actions recommandées :${NC}"
-    echo -e "  1. Modifiez /etc/hosts sur les machines clientes"
+    echo -e "  1. Modifiez /etc/hosts sur les machines clientes (mode .local)"
     echo -e "  2. Changez les mots de passe par défaut"
     echo -e "  3. Exécutez: ~/Coolify\\ AI\\ Suite/install-ollama-models.sh"
     echo ""

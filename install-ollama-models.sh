@@ -72,8 +72,6 @@ parse_args() {
 
     for arg in "$@"; do
         case "$arg" in
-            -h|--help) usage; exit 0 ;;
-            --version) echo "Coolify AI Suite v${AI_SUITE_VERSION}"; exit 0 ;;
             --dry-run) DRY_RUN=true ;;
             --no-color) NO_COLOR=true ;;
             --list) show_list=true ;;
@@ -88,7 +86,6 @@ parse_args() {
 
     echo "$show_list"
     if [[ ${#models[@]} -gt 0 ]]; then
-        # Retourne les modèles séparés par |
         local IFS='|'
         echo "${models[*]}"
     fi
@@ -233,6 +230,11 @@ show_list() {
 # POINT D'ENTRÉE
 # ============================================
 main() {
+    # Handle help/version before parse_args (évite subshell exit bug)
+    for arg in "$@"; do
+        case "$arg" in -h|--help) usage; exit 0 ;; --version) echo "Coolify AI Suite v${AI_SUITE_VERSION}"; exit 0 ;; esac
+    done
+
     local args
     args=$(parse_args "$@")
 

@@ -31,12 +31,13 @@ fi
 # ============================================
 DRY_RUN=false
 FORCE=false
+_COMMON_REMAINING=""
 
 # ============================================
 # FICHIERS
 # ============================================
-readonly AI_SUITE_DIR="/opt/ai-suite"
-readonly TRAEFIK_DIR="${AI_SUITE_DIR}/traefik"
+AI_SUITE_DIR="${AI_SUITE_DIR:-/opt/ai-suite}"
+TRAEFIK_DIR="${AI_SUITE_DIR}/traefik"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly LOG_FILE_DEFAULT="/var/log/ai-suite.log"
 LOG_FILE="${LOG_FILE:-${LOG_FILE_DEFAULT}}"
@@ -152,20 +153,27 @@ parse_common_args() {
         esac
     done
 
-    # Handle --log with value
+    # Handle --log with value; skip already-handled flags
     local skip_next=false
     remaining=()
     for ((i=0; i<${#args[@]}; i++)); do
         if $skip_next; then skip_next=false; continue; fi
-        if [[ "${args[$i]}" == "--log" ]] && [[ $((i+1)) -lt ${#args[@]} ]]; then
-            LOG_FILE="${args[$((i+1))]}"
-            skip_next=true
-        else
-            remaining+=("${args[$i]}")
-        fi
+        case "${args[$i]}" in
+            --log)
+                if [[ $((i+1)) -lt ${#args[@]} ]]; then
+                    LOG_FILE="${args[$((i+1))]}"
+                    skip_next=true
+                fi
+                ;;
+            --dry-run|--force|--no-color|-h|--help|--version) ;;
+            *)
+                remaining+=("${args[$i]}")
+                ;;
+        esac
     done
 
-    echo "${remaining[@]}"
+    _COMMON_REMAINING="${remaining[*]}"
+    printf '%s\n' "${remaining[@]}"
 }
 
 # ============================================
@@ -384,6 +392,245 @@ get_container_image() {
 get_container_uptime() {
     local container="$1"
     docker inspect "$container" --format '{{.State.StartedAt}}' 2>/dev/null || echo ""
+}
+
+# ============================================
+# DDNS — MISE À JOUR DYNAMIQUE DNS (Cloudflare)
+# ============================================
+
+# Appel API Cloudflare (retourne le JSON brut)
+cloudflare_api() {
+    local endpoint="$1"
+    local method="${2:-GET}"
+    local data="${3:-}"
+    curl -s --max-time 15 \
+        -X "$method" \
+        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        "https://api.cloudflare.com/client/v4/${endpoint}" \
+        ${data:+-d "$data"}
+}
+
+# Met à jour (ou crée) un enregistrement DNS A sur Cloudflare
+cloudflare_update_dns_a() {
+    local name="$1"
+    local ip="$2"
+    local zone_id="$3"
+    local record_id
+
+    # Chercher l'enregistrement A existant
+    record_id=$(cloudflare_api "zones/${zone_id}/dns_records?type=A&name=${name}" | \
+        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result'][0]['id'] if d.get('result') else '')" 2>/dev/null || echo "")
+
+    if [[ -n "$record_id" ]]; then
+        cloudflare_api "zones/${zone_id}/dns_records/${record_id}" PUT \
+            "{\"type\":\"A\",\"name\":\"${name}\",\"content\":\"${ip}\",\"ttl\":120,\"proxied\":false}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0) if d.get('success') else exit(1)" 2>/dev/null
+    else
+        cloudflare_api "zones/${zone_id}/dns_records" POST \
+            "{\"type\":\"A\",\"name\":\"${name}\",\"content\":\"${ip}\",\"ttl\":120,\"proxied\":false}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0) if d.get('success') else exit(1)" 2>/dev/null
+    fi
+}
+
+# Résout le nom de domaine en IP (vérification)
+resolve_to_ip() {
+    local domain="$1"
+    dig +short "$domain" A 2>/dev/null | head -1 || host "$domain" 2>/dev/null | grep "has address" | awk '{print $NF}' | head -1
+}
+
+# Récupère le Zone ID Cloudflare à partir du domaine
+cloudflare_get_zone_id() {
+    local domain="$1"
+    cloudflare_api "zones?name=${domain}" | \
+        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result'][0]['id'] if d.get('result') else '')" 2>/dev/null || echo ""
+}
+
+# Vérifie que le token Cloudflare est valide
+cloudflare_verify_token() {
+    cloudflare_api "user/tokens/verify" | \
+        python3 -c "import sys,json; d=json.load(sys.stdin); exit(0) if d.get('success') else exit(1)" 2>/dev/null
+}
+
+# Point d'entrée principal DDNS : compare IP publique et DNS, met à jour si différent
+ddns_update() {
+    local domain="$1"
+    local public_ip="$2"
+    local provider="${DDNS_PROVIDER:-cloudflare}"
+    local updated=false
+
+    case "$provider" in
+        cloudflare)
+            if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+                log_error "CLOUDFLARE_API_TOKEN non défini dans .env"
+                return 1
+            fi
+            local zone_id="${CLOUDFLARE_ZONE_ID:-}"
+            if [[ -z "$zone_id" ]]; then
+                log_info "Récupération automatique du Zone ID Cloudflare..."
+                zone_id=$(cloudflare_get_zone_id "$domain")
+                if [[ -z "$zone_id" ]]; then
+                    log_error "Impossible de récupérer le Zone ID pour ${domain}. Vérifiez votre token API."
+                    return 1
+                fi
+                CLOUDFLARE_ZONE_ID="$zone_id"
+            fi
+
+            # Mettre à jour l'enregistrement A du domaine principal
+            local dns_ip
+            dns_ip=$(resolve_to_ip "$domain")
+            if [[ "$dns_ip" != "$public_ip" ]]; then
+                log_info "Mise à jour de ${domain} : ${dns_ip:-vide} → ${public_ip}"
+                if cloudflare_update_dns_a "$domain" "$public_ip" "$zone_id"; then
+                    log_success "DNS mis à jour : ${domain} → ${public_ip}"
+                    updated=true
+                else
+                    log_error "Échec mise à jour DNS pour ${domain}"
+                fi
+            else
+                log_info "Aucun changement pour ${domain} (déjà ${public_ip})"
+            fi
+
+            # Mettre à jour l'enregistrement A du wildcard *.domain
+            local wildcard_ip
+            wildcard_ip=$(resolve_to_ip "*.${domain}")
+            if [[ "$wildcard_ip" != "$public_ip" ]]; then
+                log_info "Mise à jour de *.${domain} : ${wildcard_ip:-vide} → ${public_ip}"
+                if cloudflare_update_dns_a "*.${domain}" "$public_ip" "$zone_id"; then
+                    log_success "DNS mis à jour : *.${domain} → ${public_ip}"
+                    updated=true
+                else
+                    log_error "Échec mise à jour DNS pour *.${domain}"
+                fi
+            else
+                log_info "Aucun changement pour *.${domain} (déjà ${public_ip})"
+            fi
+
+            if $updated; then
+                send_notification "DDNS mis à jour" "IP publique ${public_ip} propagée vers ${domain}"
+            fi
+            ;;
+        *)
+            log_error "Fournisseur DDNS non supporté : ${provider}"
+            return 1
+            ;;
+    esac
+}
+
+# Assistant interactif de configuration Cloudflare
+setup_cloudflare_ddns() {
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}  Configuration DDNS — Cloudflare${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "Avant de commencer, assurez-vous d'avoir :"
+    echo -e "  1. Un compte Cloudflare (https://dash.cloudflare.com)"
+    echo -e "  2. ${BOLD}${DOMAIN:-votre-domaine}${NC} ajouté à Cloudflare"
+    echo -e "  3. Les nameservers Ooredoo changés pour ceux de Cloudflare"
+    echo ""
+    echo -e "Pour créer un token : Dashboard Cloudflare → Mon Profil → Tokens API → Créer"
+    echo -e "Permission minimale : ${BOLD}Zone.DNS:Edit${NC}"
+    echo ""
+
+    local api_token
+    local env_file="${SCRIPT_DIR}/.env"
+    [[ -f "$env_file" ]] || touch "$env_file"
+
+    read -s -p "Token API Cloudflare : " api_token
+    echo ""
+
+    if [[ -z "$api_token" ]]; then
+        log_error "Token requis"
+        return 1
+    fi
+
+    # Vérifier le token
+    log_info "Vérification du token..."
+    CLOUDFLARE_API_TOKEN="$api_token"
+    if ! cloudflare_verify_token; then
+        log_error "Token invalide. Vérifiez qu'il a les permissions Zone.DNS:Edit"
+        return 1
+    fi
+    log_success "Token valide"
+
+    # Récupérer le Zone ID
+    local zone_id
+    zone_id=$(cloudflare_get_zone_id "${DOMAIN:-}")
+    if [[ -z "$zone_id" ]]; then
+        log_warning "Zone ID non trouvé pour ${DOMAIN:-}. Vérifiez que le domaine est ajouté à Cloudflare."
+        echo -e "Entrez le Zone ID manuellement (Dashboard → Aperçu → ID de zone) :"
+        read -r zone_id
+    fi
+
+    # Enregistrer dans .env
+    if grep -q "^CLOUDFLARE_API_TOKEN=" "$env_file" 2>/dev/null; then
+        sed -i "s/^CLOUDFLARE_API_TOKEN=.*/CLOUDFLARE_API_TOKEN=${api_token}/" "$env_file"
+    else
+        echo "" >> "$env_file"
+        echo "# Cloudflare DDNS (ajouté par setup-ddns)" >> "$env_file"
+        echo "CLOUDFLARE_API_TOKEN=${api_token}" >> "$env_file"
+    fi
+
+    if [[ -n "$zone_id" ]]; then
+        if grep -q "^CLOUDFLARE_ZONE_ID=" "$env_file" 2>/dev/null; then
+            sed -i "s/^CLOUDFLARE_ZONE_ID=.*/CLOUDFLARE_ZONE_ID=${zone_id}/" "$env_file"
+        else
+            echo "CLOUDFLARE_ZONE_ID=${zone_id}" >> "$env_file"
+        fi
+    fi
+
+    # Activer DDNS
+    if grep -q "^DDNS_ENABLED=" "$env_file" 2>/dev/null; then
+        sed -i "s/^DDNS_ENABLED=.*/DDNS_ENABLED=true/" "$env_file"
+    else
+        echo "DDNS_ENABLED=true" >> "$env_file"
+    fi
+    if grep -q "^DDNS_PROVIDER=" "$env_file" 2>/dev/null; then
+        sed -i "s/^DDNS_PROVIDER=.*/DDNS_PROVIDER=cloudflare/" "$env_file"
+    else
+        echo "DDNS_PROVIDER=cloudflare" >> "$env_file"
+    fi
+
+    chmod 600 "$env_file"
+    log_success "Configuration Cloudflare enregistrée dans .env"
+
+    # Test de mise à jour
+    echo ""
+    echo -e "Souhaitez-vous tester la mise à jour DNS maintenant ?"
+    read -p "Tester la mise à jour ? (O/n): " test_now
+    if [[ "$test_now" != "n" && "$test_now" != "N" ]]; then
+        local public_ip
+        public_ip=$(get_public_ip)
+        if [[ -n "$public_ip" ]]; then
+            ddns_update "${DOMAIN:-}" "$public_ip"
+        fi
+    fi
+
+    # Proposer l'installation du cron
+    echo ""
+    echo -e "Installer une tâche cron pour la vérification automatique toutes les 5 minutes ?"
+    read -p "Installer cron ? (O/n): " install_cron
+    if [[ "$install_cron" != "n" && "$install_cron" != "N" ]]; then
+        install_ddns_cron
+    fi
+
+    echo ""
+    log_success "Configuration DDNS terminée"
+}
+
+# Installation de la tâche cron pour DDNS
+install_ddns_cron() {
+    local script_path="${SCRIPT_DIR}/check-public-ip.sh"
+    local cron_cmd="*/5 * * * * ${script_path} --ddns --cron >> /var/log/ai-suite-ddns.log 2>&1"
+
+    if crontab -l 2>/dev/null | grep -q "check-public-ip.sh --ddns"; then
+        log_info "Tâche cron DDNS déjà installée"
+        return 0
+    fi
+
+    (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
+    log_success "Cron installé : vérification DDNS toutes les 5 minutes"
 }
 
 # ============================================

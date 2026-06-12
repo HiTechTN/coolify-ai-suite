@@ -52,8 +52,8 @@ usage_function=usage
 # PARSE DES ARGUMENTS
 # ============================================
 parse_args() {
-    local remaining
-    remaining=$(parse_common_args "$@")
+    parse_common_args "$@"
+    local remaining="${_COMMON_REMAINING:-}"
     if [[ -n "$remaining" ]]; then
         log_error "Argument inconnu: ${remaining}"
         usage

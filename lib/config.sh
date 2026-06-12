@@ -56,6 +56,14 @@ CODE_SERVER_PASSWORD="${CODE_SERVER_PASSWORD:-}"
 WEBUI_SECRET="${WEBUI_SECRET:-}"
 
 # ============================================
+# DDNS — MISE À JOUR DYNAMIQUE DNS
+# ============================================
+export DDNS_ENABLED="${DDNS_ENABLED:-false}"
+export DDNS_PROVIDER="${DDNS_PROVIDER:-cloudflare}"
+export CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN:-}"
+export CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID:-}"
+
+# ============================================
 # VARIABLES DÉRIVÉES
 # ============================================
 export TLD="${DOMAIN:-local}"

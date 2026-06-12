@@ -1,64 +1,143 @@
 #!/bin/bash
 # setup-traefik-only.sh - Ajouter HTTPS/Traefik à une installation existante
 # Author: Mohamed Azmi KAANICHE
-# Version: 1.1
+# Version: 2.0
 #
-# Usage: sudo ./setup-traefik-only.sh
-#   ou : sudo DOMAIN=hitech.tn SSL_EMAIL=admin@hitech.tn ./setup-traefik-only.sh
+# Usage: sudo ./setup-traefik-only.sh [options]
+#
+# Options:
+#   -h, --help       Afficher cette aide
+#   --dry-run        Simuler sans modifier
+#   --force          Forcer la reconfiguration
+#   --no-color       Désactiver les couleurs
+#   --log FILE       Fichier de log
+#   --version        Afficher la version
+#
+# Variables d'environnement:
+#   DOMAIN, SSL_EMAIL, HTTP_PORT, HTTPS_PORT
 
 set -euo pipefail
 
 # ============================================
-# COULEURS
+# SOURCE DES BIBLIOTHÈQUES
 # ============================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/config.sh"
+
+LOG_FILE="/var/log/ai-suite-traefik.log"
+HTTP_PORT="${TRAEFIK_HTTP_PORT:-80}"
+HTTPS_PORT="${TRAEFIK_HTTPS_PORT:-443}"
 
 # ============================================
-# CONFIGURATION
+# USAGE
 # ============================================
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly NETWORK_NAME="${NETWORK_NAME:-ai-suite}"
-readonly TRAEFIK_DIR="${TRAEFIK_DIR:-/opt/ai-suite/traefik}"
-readonly HTTP_PORT="${HTTP_PORT:-80}"
-readonly HTTPS_PORT="${HTTPS_PORT:-443}"
-export DOMAIN="${DOMAIN:-}"
-export SSL_EMAIL="${SSL_EMAIL:-admin@example.com}"
+usage() {
+    cat << EOF
+${BOLD}NAME${NC}
+    setup-traefik-only.sh — Ajouter HTTPS/Traefik à une installation existante
+
+${BOLD}SYNOPSIS${NC}
+    sudo ./setup-traefik-only.sh [OPTIONS]
+
+${BOLD}DESCRIPTION${NC}
+    Configure et déploie Traefik avec HTTPS automatique sur les services
+    existants de la AI Suite. Peut être exécuté après l'installation
+    initiale si HTTPS n'a pas été configuré.
+
+${BOLD}OPTIONS${NC}
+    -h, --help       Afficher cette aide
+    --dry-run        Simuler sans modifier
+    --force          Forcer la reconfiguration
+    --no-color       Désactiver les couleurs
+    --log FILE       Fichier de log
+    --version        Afficher la version
+
+${BOLD}EXEMPLE${NC}
+    sudo ./setup-traefik-only.sh
+    sudo DOMAIN=hitech.tn ./setup-traefik-only.sh --dry-run
+EOF
+}
+
+usage_function=usage
+
+# ============================================
+# PARSE DES ARGUMENTS
+# ============================================
+parse_args() {
+    local args=("$@")
+
+    for arg in "${args[@]}"; do
+        case "$arg" in
+            -h|--help) usage; show_common_options; exit 0 ;;
+            --version) echo "Coolify AI Suite v${AI_SUITE_VERSION}"; exit 0 ;;
+        esac
+    done
+
+    local remaining
+    remaining=$(parse_common_args "$@")
+
+    if [[ -n "$remaining" ]]; then
+        log_error "Argument inconnu: ${remaining}"
+        usage
+        exit 1
+    fi
+}
 
 # ============================================
 # FONCTIONS
 # ============================================
-log() { echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $1"; }
-success() { echo -e "${GREEN}✓${NC} $1"; }
-error() { echo -e "${RED}✗${NC} $1"; }
+add_traefik_labels() {
+    local compose_file="$1"
+    local service_name="$2"
+    local hostname="$3"
 
-check_root() {
-    [[ $EUID -eq 0 ]] || { error "Doit être exécuté en root"; exit 1; }
+    if [[ ! -f "$compose_file" ]]; then
+        log_warning "Fichier non trouvé: ${compose_file}"
+        return
+    fi
+
+    if grep -q "traefik.enable" "$compose_file"; then
+        log_info "${service_name} : labels Traefik déjà présents"
+        return
+    fi
+
+    log_info "Ajout des labels Traefik à ${service_name}..."
+
+    if $DRY_RUN; then
+        log_warning "[DRY-RUN] Ajout des labels sur ${compose_file}"
+        return
+    fi
+
+    # Créer une version HEADER + nouveau contenu
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    cat > "$tmp_file" << LABELS_EOF
+      - "traefik.enable=true"
+      - "traefik.http.routers.${service_name}.rule=Host(\`${hostname}.${TLD}\`)"
+      - "traefik.http.routers.${service_name}.tls=true"
+LABELS_EOF
+
+    # Insérer les labels après la ligne "labels:"
+    sed -i "/^labels:/r ${tmp_file}" "$compose_file"
+    rm -f "$tmp_file"
+
+    log_success "${service_name} : labels ajoutés"
 }
 
-check_docker() {
-    docker info &> /dev/null || { error "Docker n'est pas actif"; exit 1; }
-}
-
-# ============================================
-# SCRIPT
-# ============================================
 main() {
+    setup_trap
+    parse_args "$@"
+    require_root
+    require_docker
+    load_env
+
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
     echo -e "${BLUE}  Ajout de Traefik/HTTPS à l'installation       ${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
     echo ""
-
-    # Charger .env si présent
-    if [[ -f "$SCRIPT_DIR/.env" ]]; then
-        set -a; source "$SCRIPT_DIR/.env"; set +a
-    fi
 
     # Demander le domaine si non fourni
     if [[ -z "${DOMAIN:-}" ]]; then
@@ -70,22 +149,16 @@ main() {
         fi
     fi
 
-    check_root
-    check_docker
-
-    local tld="${DOMAIN:-local}"
-
-    # Créer le réseau si nécessaire
-    log "Création du réseau Docker..."
-    docker network create "$NETWORK_NAME" 2>/dev/null || true
-    success "Réseau '$NETWORK_NAME' prêt"
+    # Créer le réseau
+    run_cmd "Création du réseau Docker '$NETWORK_NAME'" \
+        bash -c "docker network create '$NETWORK_NAME' 2>/dev/null || true"
 
     # Créer les dossiers
-    mkdir -p "$TRAEFIK_DIR"/{config,acme,logs}
+    run_cmd "Création des dossiers Traefik" \
+        mkdir -p "$TRAEFIK_DIR"/{config,acme,logs}
 
     # Configuration Traefik
-    log "Configuration de Traefik..."
-    cat > "$TRAEFIK_DIR/traefik.yml" << EOF
+    cat > "$TRAEFIK_DIR/traefik.yml" << TRAEFIK_EOF
 global:
   checkNewVersion: true
   sendAnonymousUsage: false
@@ -121,12 +194,15 @@ providers:
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     network: ${NETWORK_NAME}
-EOF
-    success "traefik.yml créé"
+TRAEFIK_EOF
+    log_success "traefik.yml créé"
+
+    # Middlewares (auth, rate limit, security headers)
+    create_traefik_dashboard_middleware
 
     # Config dynamique si domaine fourni
     if [[ -n "$DOMAIN" ]]; then
-        cat > "$TRAEFIK_DIR/config/dynamic-config.yml" << EOF
+        cat > "$TRAEFIK_DIR/config/dynamic-config.yml" << DYNAMIC_EOF
 http:
   routers:
     code-server:
@@ -136,6 +212,9 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+      middlewares:
+        - secHeaders
+        - rate-limit
 
     open-webui:
       rule: "Host(\`chat.${DOMAIN}\`)"
@@ -144,6 +223,9 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+      middlewares:
+        - secHeaders
+        - rate-limit
 
     ollama:
       rule: "Host(\`ollama.${DOMAIN}\`)"
@@ -152,22 +234,37 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+      middlewares:
+        - secHeaders
+        - rate-limit
 
   services:
     code-server:
       loadBalancer:
         servers:
           - url: "http://code-server:8443"
+        healthCheck:
+          path: /health
+          interval: 30s
+          timeout: 3s
 
     open-webui:
       loadBalancer:
         servers:
           - url: "http://open-webui:8080"
+        healthCheck:
+          path: /health
+          interval: 30s
+          timeout: 3s
 
     ollama:
       loadBalancer:
         servers:
           - url: "http://ollama:11434"
+        healthCheck:
+          path: /
+          interval: 30s
+          timeout: 3s
 
 tls:
   options:
@@ -176,42 +273,17 @@ tls:
       cipherSuites:
         - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
         - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-EOF
-        success "Config dynamique créée pour le domaine $DOMAIN"
+DYNAMIC_EOF
+        log_success "Config dynamique créée pour le domaine ${DOMAIN}"
     fi
 
     # Labels pour les services existants
-    log "Ajout des labels Traefik aux services..."
-
-    add_traefik_labels() {
-        local compose_file="$1"
-        local service_name="$2"
-        local hostname="$3"
-
-        if [[ ! -f "$compose_file" ]]; then
-            return
-        fi
-
-        if grep -q "traefik.enable" "$compose_file"; then
-            return
-        fi
-
-        local labels_block
-        labels_block=$(printf '      - "traefik.enable=true"\n      - "traefik.http.routers.%s.rule=Host(\\\`%s.%s\\\`)"\n      - "traefik.http.routers.%s.tls=true"' \
-            "$service_name" "$hostname" "$tld" "$service_name")
-
-        sed -i "/^labels:/a\\$labels_block" "$compose_file"
-        success "$service_name configuré"
-    }
-
     add_traefik_labels "/opt/ai-suite/code-server/docker-compose.yml" "code-server" "code"
     add_traefik_labels "/opt/ai-suite/ollama/docker-compose.yml" "ollama" "ollama"
     add_traefik_labels "/opt/ai-suite/open-webui/docker-compose.yml" "open-webui" "chat"
 
     # Docker Compose Traefik
-    log "Création du docker-compose.yml Traefik..."
-    cat > "$TRAEFIK_DIR/docker-compose.yml" << EOF
-version: '3.8'
+    cat > "$TRAEFIK_DIR/docker-compose.yml" << COMPOSE_EOF
 services:
   traefik:
     image: traefik:v3.0
@@ -231,64 +303,64 @@ services:
       - ${NETWORK_NAME}
     restart: unless-stopped
     environment:
-      - TZ=Africa/Tunis
+      - TZ=${TZ}
     labels:
       - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(\`traefik.${DOMAIN}\`) || (Host(\`localhost\`) && PathPrefix(\`/api\`))"
+      - "traefik.http.routers.api.service=api@internal"
+      - "traefik.http.routers.api.middlewares=dashboard-auth"
+      - "traefik.http.routers.api.tls=true"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 networks:
   ${NETWORK_NAME}:
     external: true
-EOF
-    success "docker-compose.yml créé"
+COMPOSE_EOF
+    log_success "docker-compose.yml créé"
 
-    # Ouvrir les ports
-    log "Configuration du pare-feu..."
-    ufw allow "$HTTP_PORT/tcp" 2>/dev/null || true
-    ufw allow "$HTTPS_PORT/tcp" 2>/dev/null || true
-    success "Ports ouverts"
+    # Pare-feu
+    run_cmd "Ouverture des ports HTTP/HTTPS" \
+        bash -c "ufw allow ${HTTP_PORT}/tcp 2>/dev/null; ufw allow ${HTTPS_PORT}/tcp 2>/dev/null; true"
 
     # Démarrer Traefik
-    log "Démarrage de Traefik..."
-    cd "$TRAEFIK_DIR" && docker compose up -d
-    success "Traefik démarré"
+    run_cmd "Démarrage de Traefik" bash -c "cd '$TRAEFIK_DIR' && docker compose up -d"
 
     # Exporter la config
     if [[ -n "$DOMAIN" ]]; then
-        cat > "$SCRIPT_DIR/.env" << EOF
+        cat > "$SCRIPT_DIR/.env" << ENV_EOF
 DOMAIN=${DOMAIN}
 SSL_EMAIL=${SSL_EMAIL}
 NETWORK_NAME=${NETWORK_NAME}
-EOF
+AI_SUITE_DIR=${AI_SUITE_DIR}
+ENV_EOF
         chmod 600 "$SCRIPT_DIR/.env" 2>/dev/null || true
     fi
 
+    # Résumé
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
     echo -e "${GREEN}✓ Traefik configuré avec succès !${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
     echo ""
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "${BOLD}Accès HTTPS (SSL automatique) :${NC}"
+        echo -e "${BOLD}Accès HTTPS :${NC}"
         echo -e "  • Code-Server: https://code.${DOMAIN}"
         echo -e "  • Open WebUI:  https://chat.${DOMAIN}"
         echo -e "  • Ollama API:  https://ollama.${DOMAIN}"
         echo ""
         echo -e "${BOLD}Configuration DNS requise :${NC}"
-        echo -e "  A      ${DOMAIN}    → $(hostname -I | awk '{print $1}')"
-        echo -e "  A      *.${DOMAIN}  → $(hostname -I | awk '{print $1}')"
-        echo ""
+        echo -e "  A      ${DOMAIN}    → $(get_local_ip)"
+        echo -e "  A      *.${DOMAIN}  → $(get_local_ip)"
     else
-        echo -e "${BOLD}Accès HTTPS (mode développement) :${NC}"
-        echo -e "  • Modifiez /etc/hosts :"
-        echo -e "    $(hostname -I | awk '{print $1}') code-server.local chat.local ollama.local"
-        echo ""
+        echo -e "${BOLD}Accès HTTPS (développement) :${NC}"
+        echo -e "  Modifiez /etc/hosts : $(get_local_ip) code-server.local chat.local ollama.local"
     fi
-    echo -e "${BOLD}Dashboard Traefik :${NC}"
-    echo -e "  • http://$(hostname -I | awk '{print $1}'):8080"
     echo ""
-    echo -e "${BOLD}Commandes :${NC}"
-    echo -e "  • Redémarrer: cd $TRAEFIK_DIR && docker compose restart"
-    echo -e "  • Logs: docker logs -f traefik"
+    echo -e "${BOLD}Dashboard Traefik :${NC} http://$(get_local_ip):8080"
     echo ""
 }
 

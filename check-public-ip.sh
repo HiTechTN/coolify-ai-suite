@@ -1,230 +1,209 @@
 #!/bin/bash
 # check-public-ip.sh - Vérifier et alerter en cas de changement d'IP publique
 # Author: Mohamed Azmi KAANICHE
-# Version: 1.0
+# Version: 2.0
 #
-# Usage: sudo ./check-public-ip.sh
-#   ou : sudo ./check-public-ip.sh --fix    (tente de mettre à jour la configuration)
-#   ou : sudo ./check-public-ip.sh --cron   (mode silencieux pour cron)
+# Usage: sudo ./check-public-ip.sh [options]
 #
-# Ce script compare l'IP publique du serveur avec l'enregistrement DNS
-# du domaine configuré. Utile si le domaine pointe vers une IP fixe
-# mais que le serveur peut changer d'IP.
+# Options:
+#   -h, --help       Afficher cette aide
+#   --fix            Mettre à jour la configuration locale
+#   --cron           Mode silencieux pour cron (journalisation uniquement)
+#   --no-color       Désactiver les couleurs
+#   --log FILE       Fichier de log
+#   --version        Afficher la version
 
 set -euo pipefail
 
-# ============================================
-# COULEURS
-# ============================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-# ============================================
-# CONFIGURATION
-# ============================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+
 LOG_FILE="${LOG_FILE:-/var/log/ai-suite-ipcheck.log}"
 STATE_FILE="${STATE_FILE:-/opt/ai-suite/.last-known-ip}"
 
-# Charger .env si présent
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    set -a; source "$SCRIPT_DIR/.env"; set +a
-fi
+# ============================================
+# USAGE
+# ============================================
+usage() {
+    cat << EOF
+${BOLD}NAME${NC}
+    check-public-ip.sh — Vérifier la cohérence IP publique / DNS
 
-DOMAIN="${DOMAIN:-}"
-DNS_SERVERS="${DNS_SERVERS:-dns1.tunet.tn dns2.tunet.tn}"
-FIXED_IP="${FIXED_IP:-196.203.63.49}"
+${BOLD}SYNOPSIS${NC}
+    sudo ./check-public-ip.sh [OPTIONS]
+
+${BOLD}DESCRIPTION${NC}
+    Compare l'IP publique du serveur avec l'enregistrement DNS du domaine.
+    Utile pour détecter les changements d'IP et maintenir la cohérence.
+
+${BOLD}OPTIONS${NC}
+    -h, --help       Afficher cette aide
+    --fix            Mettre à jour FIXED_IP dans .env + redémarrer Traefik
+    --cron           Mode silencieux (journalisation seule, pas de sortie)
+    --no-color       Désactiver les couleurs
+    --log FILE       Fichier de log
+    --version        Afficher la version
+
+${BOLD}CONFIGURATION${NC}
+    Variables dans .env :
+      DOMAIN          Domaine à vérifier (ex: hitech.tn)
+      FIXED_IP        IP fixe de référence (optionnelle, détection auto sinon)
+      DNS_SERVERS     Serveurs DNS pour la résolution
+
+${BOLD}EXEMPLES${NC}
+    sudo ./check-public-ip.sh
+    sudo ./check-public-ip.sh --fix
+    sudo ./check-public-ip.sh --cron
+EOF
+}
+
+usage_function=usage
 
 # ============================================
-# FONCTIONS
+# PARSE DES ARGUMENTS
 # ============================================
-log() {
-    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-    echo "$msg" >> "$LOG_FILE"
-    if [[ "${2:-}" != "quiet" ]]; then
-        echo -e "${CYAN}$1${NC}"
-    fi
-}
+parse_args() {
+    local mode="normal"
 
-success() {
-    echo -e "${GREEN}✓${NC} $1"
-    log "[OK] $1" quiet
-}
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help) usage; exit 0 ;;
+            --version) echo "Coolify AI Suite v${AI_SUITE_VERSION}"; exit 0 ;;
+            --fix) mode="fix" ;;
+            --cron) mode="cron" ;;
+            --no-color) NO_COLOR=true ;;
+            --log) ;;
+            *) log_error "Argument inconnu: ${arg}"; usage; exit 1 ;;
+        esac
+    done
 
-warn() {
-    echo -e "${YELLOW}⚠${NC} $1"
-    log "[WARN] $1" quiet
-}
-
-error() {
-    echo -e "${RED}✗${NC} $1"
-    log "[ERROR] $1" quiet
-}
-
-get_public_ip() {
-    curl -s --max-time 10 https://api.ipify.org 2>/dev/null ||
-    curl -s --max-time 10 https://ifconfig.me 2>/dev/null ||
-    curl -s --max-time 10 https://icanhazip.com 2>/dev/null ||
-    echo ""
+    echo "$mode"
 }
 
 resolve_domain_ip() {
     local domain="$1"
     local ip=""
 
-    for dns in $DNS_SERVERS; do
-        ip=$(dig +short "@${dns}" "$domain" A 2>/dev/null | head -1)
-        if [[ -n "$ip" ]]; then
-            echo "$ip"
-            return 0
-        fi
-    done
-
-    # Fallback: résolution système
-    ip=$(dig +short "$domain" A 2>/dev/null | head -1)
-    if [[ -n "$ip" ]]; then
-        echo "$ip"
-        return 0
+    if [[ -n "${DNS_SERVERS:-}" ]]; then
+        for dns in $DNS_SERVERS; do
+            ip=$(dig +short "@${dns}" "$domain" A 2>/dev/null | head -1)
+            [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+        done
     fi
+
+    ip=$(dig +short "$domain" A 2>/dev/null | head -1)
+    [[ -n "$ip" ]] && { echo "$ip"; return 0; }
 
     ip=$(host "$domain" 2>/dev/null | grep "has address" | awk '{print $NF}' | head -1)
-    if [[ -n "$ip" ]]; then
-        echo "$ip"
-        return 0
-    fi
+    [[ -n "$ip" ]] && { echo "$ip"; return 0; }
 
     echo ""
     return 1
 }
 
-check_dependencies() {
-    local missing=()
-    for cmd in curl dig host; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing+=("$cmd")
-        fi
-    done
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        error "Dépendances manquantes: ${missing[*]}"
-        error "Installez: apt-get install -y dnsutils curl"
-        exit 1
-    fi
-}
-
 # ============================================
-# VÉRIFICATION PRINCIPALE
+# POINT D'ENTRÉE
 # ============================================
 main() {
-    local mode="${1:-normal}"
+    local mode
+    mode=$(parse_args "$@")
     local is_cron=false
 
-    [[ "$mode" == "--cron" ]] && is_cron=true
+    [[ "$mode" == "cron" ]] && is_cron=true
 
-    # En mode cron, pas de sortie couleur
     if $is_cron; then
         exec >/dev/null 2>&1
     fi
 
-    check_dependencies
+    require_root
+    load_env
+
+    # Valeurs depuis .env (sans défaut fixe pour FIXED_IP)
+    DOMAIN="${DOMAIN:-}"
 
     echo ""
     echo -e "${BOLD}${CYAN}════════════════════════════════════════${NC}"
-    echo -e "${BOLD}${CYAN}  Vérification IP Publique              ${NC}"
+    echo -e "${BOLD}${CYAN}  Vérification IP Publique               ${NC}"
     echo -e "${BOLD}${CYAN}════════════════════════════════════════${NC}"
     echo ""
 
-    # 1. IP publique actuelle du serveur
     local public_ip
     public_ip=$(get_public_ip)
     if [[ -z "$public_ip" ]]; then
-        error "Impossible de détecter l'IP publique"
+        log_error "Impossible de détecter l'IP publique"
         exit 1
     fi
-    success "IP publique detectée: ${BOLD}${public_ip}${NC}"
+    log_success "IP publique détectée: ${BOLD}${public_ip}${NC}"
 
-    # 2. Résolution DNS du domaine
+    # Résolution DNS
     local dns_ip=""
     if [[ -n "$DOMAIN" ]]; then
         dns_ip=$(resolve_domain_ip "$DOMAIN")
         if [[ -n "$dns_ip" ]]; then
-            success "DNS ${DOMAIN} → ${BOLD}${dns_ip}${NC}"
+            log_success "DNS ${DOMAIN} → ${BOLD}${dns_ip}${NC}"
         else
-            warn "Impossible de résoudre ${DOMAIN}"
+            log_warning "Impossible de résoudre ${DOMAIN}"
         fi
     fi
 
-    # 3. Comparer avec l'IP fixe de référence
-    if [[ -n "$FIXED_IP" ]]; then
+    # Comparaison avec IP fixe (si configurée)
+    if [[ -n "${FIXED_IP:-}" ]]; then
         echo ""
         echo -e "${BOLD}Comparaison avec l'IP fixe (${FIXED_IP}):${NC}"
         if [[ "$public_ip" == "$FIXED_IP" ]]; then
-            success "L'IP publique correspond à l'IP fixe ${FIXED_IP}"
+            log_success "L'IP publique correspond à l'IP fixe"
         else
-            warn "L'IP publique (${public_ip}) diffère de l'IP fixe (${FIXED_IP})"
-            warn "Vérifiez la configuration réseau ou le NAT"
+            log_warning "IP publique (${public_ip}) ≠ IP fixe (${FIXED_IP})"
+            log_warning "Mettez à jour FIXED_IP dans .env si le changement est permanent"
         fi
     fi
 
-    # 4. Comparer IP publique avec DNS
+    # Cohérence DNS
     if [[ -n "$dns_ip" ]]; then
         echo ""
-        echo -e "${BOLD}Vérification de cohérence DNS:${NC}"
+        echo -e "${BOLD}Vérification DNS:${NC}"
         if [[ "$public_ip" == "$dns_ip" ]]; then
-            success "L'IP publique correspond à l'enregistrement DNS ✓"
+            log_success "IP publique cohérente avec le DNS"
         else
-            warn "L'IP publique (${public_ip}) ≠ DNS (${dns_ip})"
-            warn "Mettez à jour l'enregistrement A de ${DOMAIN} vers ${public_ip}"
-            echo ""
-            echo -e "  ${YELLOW}Action requise chez votre registrar :${NC}"
-            echo -e "  A ${DOMAIN} → ${public_ip}"
-            echo -e "  A *.${DOMAIN} → ${public_ip}"
+            log_warning "IP publique (${public_ip}) ≠ DNS (${dns_ip})"
+            echo -e "  Action: A ${DOMAIN} → ${public_ip}"
+            echo -e "          A *.${DOMAIN} → ${public_ip}"
         fi
     fi
 
-    # 5. Sauvegarder l'IP dans l'état
+    # Sauvegarder l'IP dans l'état
     local last_ip=""
     [[ -f "$STATE_FILE" ]] && last_ip=$(cat "$STATE_FILE")
 
     if [[ "$public_ip" != "$last_ip" ]]; then
         echo "$public_ip" > "$STATE_FILE"
         if [[ -n "$last_ip" ]]; then
-            log "IP changée: ${last_ip} → ${public_ip}" quiet
-            warn "IP changée depuis la dernière vérification: ${last_ip} → ${public_ip}"
+            log_warning "IP changée: ${last_ip} → ${public_ip}"
         else
-            log "IP initiale enregistrée: ${public_ip}" quiet
+            log_info "IP initiale enregistrée: ${public_ip}"
         fi
     fi
 
-    # 6. Mode --fix: tenter de mettre à jour la config locale
-    if [[ "$mode" == "--fix" && -n "$dns_ip" && "$public_ip" != "$dns_ip" ]]; then
+    # Mode --fix
+    if [[ "$mode" == "fix" ]]; then
         echo ""
         echo -e "${YELLOW}Tentative de mise à jour de la configuration...${NC}"
 
-        # Mettre à jour le .env du projet
         if [[ -f "$SCRIPT_DIR/.env" ]]; then
             sed -i "s/^FIXED_IP=.*/FIXED_IP=${public_ip}/" "$SCRIPT_DIR/.env" 2>/dev/null || true
-            success ".env mis à jour avec FIXED_IP=${public_ip}"
+            log_success ".env mis à jour avec FIXED_IP=${public_ip}"
         fi
 
-        # Redémarrer Traefik pour forcer le rechargement SSL
-        if docker ps --format '{{.Names}}' | grep -q "^traefik$"; then
-            echo -e "  Redémarrage de Traefik..."
-            docker restart traefik 2>/dev/null && success "Traefik redémarré" || warn "Impossible de redémarrer Traefik"
+        if docker_service_exists "traefik"; then
+            log_info "Redémarrage de Traefik..."
+            docker restart traefik 2>/dev/null && log_success "Traefik redémarré" || log_warning "Échec redémarrage Traefik"
         fi
-
-        warn "DNS non modifié automatiquement (serveurs: ${DNS_SERVERS})"
-        warn "Mettez à jour manuellement l'enregistrement A chez votre registrar"
     fi
 
-    # 7. Résumé
+    # Résumé
     echo ""
     echo -e "${BLUE}════════════════════════════════════════${NC}"
-    if [[ "$public_ip" == "${dns_ip:-}" || "$public_ip" == "$FIXED_IP" ]]; then
+    if [[ "$public_ip" == "${dns_ip:-}" || "$public_ip" == "${FIXED_IP:-}" ]]; then
         echo -e "${GREEN}✓ Aucune action requise${NC}"
     else
         echo -e "${YELLOW}⚠ Action recommandée (voir ci-dessus)${NC}"

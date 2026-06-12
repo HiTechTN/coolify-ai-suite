@@ -3,7 +3,7 @@
 **Environnement de développement IA auto-hébergé** — Déployez votre stack IA en une commande.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.2.0-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.0.0-green)](CHANGELOG.md)
 [![CI Tests](https://github.com/HiTechTN/coolify-ai-suite/actions/workflows/ci.yml/badge.svg)](https://github.com/HiTechTN/coolify-ai-suite/actions/workflows/ci.yml)
 
 ---
@@ -41,21 +41,47 @@ Le script interactif vous guide :
 
 | Script | Usage |
 |--------|-------|
-| `setup-ai-suite.sh` | Installation complète (menu interactif) |
+| `setup-ai-suite.sh` | Installation complète (menu interactif ou `--unattended`) |
 | `setup-domain.sh` | Ajouter un nom de domaine + SSL à une installation existante |
 | `setup-traefik-only.sh` | Ajouter HTTPS/Traefik uniquement |
 | `check-ai-suite-status.sh` | Vérifier l'état des services |
 | `check-public-ip.sh` | Surveiller l'IP publique et la cohérence DNS |
-| `install-ollama-models.sh` | Télécharger des modèles IA (qwen2.5-coder, llama3.2, etc.) |
+| `install-ollama-models.sh` | Télécharger des modèles IA (menu interactif ou `--list`) |
 | `backup-ai-suite.sh` | Sauvegarder / restaurer l'installation |
+| `update-ai-suite.sh` | Mise à jour complète (Git + images Docker) |
+| `ai-suite-doctor.sh` | Diagnostic automatique + correction (`--fix`) |
+| `deploy-monitoring.sh` | Déploiement monitoring (cAdvisor / Grafana+Prometheus) |
+| `lib/common.sh` | Bibliothèque partagée (logging, helpers, dry-run) |
+| `lib/config.sh` | Configuration centralisée (variables .env) |
+
+>Tous les scripts supportent `--help`, `--dry-run`, `--force`, `--no-color` et `--version`.
 
 ```bash
-# Exemples
+# Exemples courants
 sudo ./check-ai-suite-status.sh
-sudo ./check-public-ip.sh
-sudo ./install-ollama-models.sh
+sudo ./check-public-ip.sh --cron
+sudo ./check-public-ip.sh --fix
+sudo ./install-ollama-models.sh --list
+sudo ./install-ollama-models.sh qwen2.5-coder:7b llama3.2:3b
 sudo ./backup-ai-suite.sh backup
-sudo ./backup-ai-suite.sh restore backup_20260425.tar.gz
+sudo ./backup-ai-suite.sh restore ai-suite_20260425.tar.gz
+sudo ./update-ai-suite.sh
+sudo ./ai-suite-doctor.sh
+sudo ./ai-suite-doctor.sh --fix
+
+# Tous les scripts acceptent --help
+sudo ./setup-ai-suite.sh --help
+sudo ./setup-ai-suite.sh --dry-run
+sudo DOMAIN=hitech.tn ./setup-ai-suite.sh --unattended
+
+# GPU support
+sudo ./setup-ai-suite.sh --enable-gpu
+sudo AI_SUITE_ENABLE_GPU=true ./setup-ai-suite.sh --unattended
+
+# Monitoring
+sudo ./deploy-monitoring.sh
+sudo ./deploy-monitoring.sh --with-grafana
+sudo ./deploy-monitoring.sh --remove
 ```
 
 ---

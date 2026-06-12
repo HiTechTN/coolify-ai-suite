@@ -1,56 +1,89 @@
 #!/bin/bash
 # setup-domain.sh - Configurer un domaine réel pour Coolify AI Suite
 # Author: Mohamed Azmi KAANICHE
-# Version: 1.0
+# Version: 2.0
 #
-# Usage: sudo ./setup-domain.sh
-# Ce script configure un nom de domaine (ex: hitech.tn) avec SSL automatique
-# pour tous les services de la Coolify AI Suite.
+# Usage: sudo ./setup-domain.sh [options]
+#
+# Options:
+#   -h, --help       Afficher cette aide
+#   --dry-run        Simuler sans modifier
+#   --force          Ignorer les vérifications
+#   --no-color       Désactiver les couleurs
+#   --log FILE       Fichier de log
+#   --version        Afficher la version
+#
+# Variables d'environnement:
+#   DOMAIN, SSL_EMAIL
 
 set -euo pipefail
 
 # ============================================
-# COULEURS
+# SOURCE DES BIBLIOTHÈQUES
 # ============================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/config.sh"
+
+LOG_FILE="/var/log/ai-suite-domain.log"
 
 # ============================================
-# CONFIGURATION
+# USAGE
 # ============================================
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly LOG_FILE="/var/log/ai-suite-domain.log"
-readonly NETWORK_NAME="${NETWORK_NAME:-ai-suite}"
-readonly TRAEFIK_DIR="${TRAEFIK_DIR:-/opt/ai-suite/traefik}"
-readonly AI_SUITE_DIR="${AI_SUITE_DIR:-/opt/ai-suite}"
+usage() {
+    cat << EOF
+${BOLD}NAME${NC}
+    setup-domain.sh — Configurer un nom de domaine avec SSL pour la AI Suite
+
+${BOLD}SYNOPSIS${NC}
+    sudo ./setup-domain.sh [OPTIONS]
+
+${BOLD}DESCRIPTION${NC}
+    Configure un nom de domaine réel (ex: hitech.tn) avec certificats SSL
+    automatiques Let's Encrypt pour tous les services de la AI Suite.
+    Sous-domaines créés : code.*, chat.*, ollama.*, coolify.*
+
+${BOLD}OPTIONS${NC}
+    -h, --help       Afficher cette aide
+    --dry-run        Simuler sans modifier
+    --force          Ignorer les vérifications DNS
+    --no-color       Désactiver les couleurs
+    --log FILE       Fichier de log
+    --version        Afficher la version
+
+${BOLD}EXEMPLE${NC}
+    sudo ./setup-domain.sh
+    sudo DOMAIN=hitech.tn SSL_EMAIL=admin@hitech.tn ./setup-domain.sh --dry-run
+EOF
+}
+
+usage_function=usage
+
+# ============================================
+# PARSE DES ARGUMENTS
+# ============================================
+parse_args() {
+    local args=("$@")
+
+    for arg in "${args[@]}"; do
+        case "$arg" in
+            -h|--help) usage; show_common_options; exit 0 ;;
+            --version) echo "Coolify AI Suite v${AI_SUITE_VERSION}"; exit 0 ;;
+        esac
+    done
+
+    local remaining
+    remaining=$(parse_common_args "$@")
+
+    if [[ -n "$remaining" ]]; then
+        log_error "Argument inconnu: ${remaining}"
+        usage
+        exit 1
+    fi
+}
 
 # ============================================
 # FONCTIONS
-# ============================================
-log() { echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $1"; echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"; }
-success() { echo -e "${GREEN}✓${NC} $1"; }
-error() { echo -e "${RED}✗${NC} $1"; }
-warn() { echo -e "${YELLOW}⚠${NC} $1"; }
-
-check_root() {
-    [[ $EUID -eq 0 ]] || { error "Doit être exécuté en root"; exit 1; }
-}
-
-check_docker() {
-    docker info &> /dev/null || { error "Docker n'est pas actif"; exit 1; }
-}
-
-get_public_ip() {
-    curl -s https://api.ipify.org 2>/dev/null || curl -s https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'
-}
-
-# ============================================
-# ÉTAPE 1: SAISIE DE LA CONFIGURATION
 # ============================================
 prompt_config() {
     clear
@@ -64,15 +97,23 @@ prompt_config() {
     echo -e "${BOLD}IP publique détectée :${NC} $ip"
     echo ""
 
-    read -p "Nom de domaine (ex: hitech.tn): " DOMAIN
-    DOMAIN="${DOMAIN:-hitech.tn}"
+    if [[ -z "${DOMAIN:-}" ]]; then
+        read -p "Nom de domaine (ex: hitech.tn): " DOMAIN
+        DOMAIN="${DOMAIN:-hitech.tn}"
+    else
+        echo -e "Domaine: ${BOLD}${DOMAIN}${NC}"
+    fi
 
-    read -p "Email pour Let's Encrypt (ex: admin@${DOMAIN}): " SSL_EMAIL
-    SSL_EMAIL="${SSL_EMAIL:-admin@${DOMAIN}}"
+    if [[ -z "${SSL_EMAIL:-}" ]]; then
+        read -p "Email Let's Encrypt (ex: admin@${DOMAIN}): " SSL_EMAIL
+        SSL_EMAIL="${SSL_EMAIL:-admin@${DOMAIN}}"
+    else
+        echo -e "Email SSL: ${BOLD}${SSL_EMAIL}${NC}"
+    fi
 
     echo ""
     echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
-    echo -e "${YELLOW}  Instructions DNS importantes                  ${NC}"
+    echo -e "${YELLOW}  Instructions DNS                              ${NC}"
     echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
     echo ""
     echo -e "Ajoutez ces enregistrements chez votre registrar :"
@@ -82,84 +123,84 @@ prompt_config() {
     echo -e "  ${CYAN}A${NC}     ${DOMAIN}          ${ip}"
     echo -e "  ${CYAN}A${NC}     *.${DOMAIN}        ${ip}"
     echo ""
-    echo -e "⏳ Attendez la propagation DNS (quelques minutes à 48h)"
-    echo ""
 
-    read -p "Les enregistrements DNS sont-ils configurés ? (O/n): " dns_ok
-    if [[ "$dns_ok" == "n" || "$dns_ok" == "N" ]]; then
-        warn "Configurez d'abord les DNS, puis relancez ce script"
-        exit 0
+    # Vérification DNS
+    if command -v dig &>/dev/null; then
+        local resolved
+        resolved=$(dig +short "$DOMAIN" 2>/dev/null | head -1)
+        if [[ -n "$resolved" ]]; then
+            log_success "DNS vérifié: ${DOMAIN} → ${resolved}"
+            if [[ "$resolved" != "$ip" ]]; then
+                log_warning "⚠ L'IP DNS (${resolved}) diffère de l'IP publique (${ip})"
+                if ! $FORCE; then
+                    log_warning "Utilisez --force pour ignorer cette vérification"
+                    log_warning "Ou attendez la propagation DNS avant de continuer"
+                fi
+            fi
+        else
+            log_warning "Impossible de vérifier le DNS pour ${DOMAIN}"
+            log_warning "Continuez si la propagation est en cours, ou utilisez --force"
+        fi
+    else
+        log_warning "dig non installé, vérification DNS ignorée"
     fi
 
-    # Vérification rapide
-    local resolved
-    resolved=$(dig +short "$DOMAIN" 2>/dev/null || host "$DOMAIN" 2>/dev/null | grep "has address" | awk '{print $NF}' || echo "")
-    if [[ -n "$resolved" ]]; then
-        success "DNS vérifié: $DOMAIN → $resolved"
-    else
-        warn "Impossible de vérifier le DNS (dig/host non installé ou propagation en cours)"
-        warn "Continuez, mais vérifiez manuellement plus tard"
+    if ! $DRY_RUN && ! $FORCE; then
+        read -p "Continuer ? (O/n): " confirm
+        if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
+            log_info "Installation annulée"
+            exit 0
+        fi
     fi
 }
 
-# ============================================
-# ÉTAPE 2: PRÉPARATION
-# ============================================
 prepare_system() {
     log "Préparation du système..."
 
-    # Créer le réseau ai-suite
-    if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
-        docker network create "$NETWORK_NAME"
-        success "Réseau '$NETWORK_NAME' créé"
-    else
-        success "Réseau '$NETWORK_NAME' existe déjà"
-    fi
+    run_cmd "Création du réseau Docker" \
+        bash -c "docker network create '$NETWORK_NAME' 2>/dev/null || true"
 
-    # Créer le dossier Traefik
-    mkdir -p "$TRAEFIK_DIR"/{config,acme,logs}
+    run_cmd "Création des dossiers Traefik" \
+        mkdir -p "$TRAEFIK_DIR"/{config,acme,logs}
 
     # Libérer le port 80 si donbosco_nginx l'utilise
-    if docker ps --format '{{.Names}}' | grep -q "donbosco_nginx"; then
-        log "Reconfiguration de donbosco_nginx (port 80 → 8081)..."
-        local nginx_network
-        nginx_network=$(docker inspect donbosco_nginx --format '{{range $net := .NetworkSettings.Networks}}{{$net}}{{end}}' 2>/dev/null || echo "")
-        docker stop donbosco_nginx
-        # Démarrer sur un autre port
-        docker rm donbosco_nginx
-        local nginx_compose
-        nginx_compose=$(docker inspect donbosco_nginx --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' 2>/dev/null || echo "/home/hitech/projects/Don-Bosco-Connect/don-bosco-connect/nginx/docker-compose.yml")
-        if [[ -f "$nginx_compose" ]]; then
-            # Modifier le docker-compose pour utiliser le port 8081
-            sed -i 's/"80:80"/"8081:80"/g; s/80:80/8081:80/g' "$nginx_compose"
-            cd "$(dirname "$nginx_compose")" && docker compose up -d 2>/dev/null || true
-        fi
-        success "donbosco_ginx reconfiguré sur le port 8081"
+    if docker_service_running "donbosco_nginx"; then
+        log_warning "donbosco_nginx utilise le port 80 — reconfiguration vers 8081"
+        run_cmd "Reconfiguration de donbosco_nginx (80 → 8081)" \
+            bash -c "
+                nginx_compose=\$(docker inspect donbosco_nginx --format '{{index .Config.Labels \"com.docker.compose.project.config_files\"}}' 2>/dev/null || echo '')
+                if [[ -f \"\$nginx_compose\" ]]; then
+                    sed -i 's/\"80:80\"/\"8081:80\"/g; s/80:80/8081:80/g' \"\$nginx_compose\"
+                    cd \"\$(dirname \"\$nginx_compose\")\" && docker compose up -d 2>/dev/null || true
+                fi
+            "
     fi
 
-    # Ouvrir les ports firewall
     if command -v ufw &>/dev/null; then
-        ufw allow 80/tcp 2>/dev/null || true
-        ufw allow 443/tcp 2>/dev/null || true
-        success "Ports 80/443 ouverts dans le pare-feu"
+        run_cmd "Ouverture des ports 80/443" \
+            bash -c "ufw allow 80/tcp 2>/dev/null; ufw allow 443/tcp 2>/dev/null; true"
     fi
 }
 
-# ============================================
-# ÉTAPE 3: DÉPLOIEMENT TRAEFIK
-# ============================================
 deploy_traefik() {
-    log "Déploiement de Traefik avec le domaine $DOMAIN..."
+    log "Déploiement de Traefik avec le domaine ${DOMAIN}..."
 
-    # Configuration principale Traefik
-    cat > "$TRAEFIK_DIR/traefik.yml" << EOF
+    mkdir -p "$TRAEFIK_DIR"/{config,acme,logs}
+
+    # Sauvegarde de l'ancienne config
+    if [[ -f "$TRAEFIK_DIR/traefik.yml" ]] && ! $DRY_RUN; then
+        local backup_file="${TRAEFIK_DIR}/traefik.yml.bak.$(date +%Y%m%d_%H%M%S)"
+        cp "$TRAEFIK_DIR/traefik.yml" "$backup_file"
+        log_info "Ancienne configuration sauvegardée: ${backup_file}"
+    fi
+
+    cat > "$TRAEFIK_DIR/traefik.yml" << TRAEFIK_EOF
 global:
   checkNewVersion: true
   sendAnonymousUsage: false
 
 api:
   dashboard: true
-  insecure: true
 
 log:
   level: INFO
@@ -195,10 +236,13 @@ providers:
   file:
     directory: /config
     watch: true
-EOF
+TRAEFIK_EOF
 
-    # Règles dynamiques pour les services
-    cat > "$TRAEFIK_DIR/config/dynamic-config.yml" << EOF
+    # Middlewares (auth, rate limit, security headers)
+    create_traefik_dashboard_middleware
+
+    # Règles dynamiques
+    cat > "$TRAEFIK_DIR/config/dynamic-config.yml" << DYNAMIC_EOF
 http:
   routers:
     code-server:
@@ -208,6 +252,9 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+      middlewares:
+        - secHeaders
+        - rate-limit
 
     open-webui:
       rule: "Host(\`chat.${DOMAIN}\`)"
@@ -216,6 +263,9 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+      middlewares:
+        - secHeaders
+        - rate-limit
 
     ollama:
       rule: "Host(\`ollama.${DOMAIN}\`)"
@@ -224,6 +274,9 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+      middlewares:
+        - secHeaders
+        - rate-limit
 
     coolify:
       rule: "Host(\`coolify.${DOMAIN}\`)"
@@ -232,15 +285,18 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+      middlewares:
+        - secHeaders
+        - rate-limit
 
-EOF
+DYNAMIC_EOF
 
-    # Vérifier et ajouter donbosco si présent
-    if docker ps --format '{{.Names}}' | grep -q "donbosco"; then
+    # Ajout donbosco si présent
+    if docker_service_running "donbosco_nginx"; then
         local nginx_ip
         nginx_ip=$(docker inspect donbosco_nginx --format '{{range $net, $conf := .NetworkSettings.Networks}}{{$conf.IPAddress}}{{"\n"}}{{end}}' 2>/dev/null | head -1)
         if [[ -n "$nginx_ip" ]]; then
-            cat >> "$TRAEFIK_DIR/config/dynamic-config.yml" << EOF
+            cat >> "$TRAEFIK_DIR/config/dynamic-config.yml" << DONBOSCO_EOF
     donbosco:
       rule: "Host(\`donbosco.${DOMAIN}\`)"
       service: donbosco
@@ -249,12 +305,12 @@ EOF
       tls:
         certResolver: letsencrypt
 
-EOF
+DONBOSCO_EOF
         fi
     fi
 
     # Services
-    cat >> "$TRAEFIK_DIR/config/dynamic-config.yml" << EOF
+    cat >> "$TRAEFIK_DIR/config/dynamic-config.yml" << SERVICES_EOF
   services:
     code-server:
       loadBalancer:
@@ -276,19 +332,19 @@ EOF
         servers:
           - url: "http://coolify:8080"
 
-EOF
+SERVICES_EOF
 
     if [[ -n "${nginx_ip:-}" ]]; then
-        cat >> "$TRAEFIK_DIR/config/dynamic-config.yml" << EOF
+        cat >> "$TRAEFIK_DIR/config/dynamic-config.yml" << DONBOSCO_SVC_EOF
     donbosco:
       loadBalancer:
         servers:
           - url: "http://${nginx_ip}:80"
 
-EOF
+DONBOSCO_SVC_EOF
     fi
 
-    cat >> "$TRAEFIK_DIR/config/dynamic-config.yml" << EOF
+    cat >> "$TRAEFIK_DIR/config/dynamic-config.yml" << TLS_EOF
 tls:
   options:
     default:
@@ -296,11 +352,10 @@ tls:
       cipherSuites:
         - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
         - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-EOF
+TLS_EOF
 
     # Docker Compose Traefik
-    cat > "$TRAEFIK_DIR/docker-compose.yml" << EOF
-version: '3.8'
+    cat > "$TRAEFIK_DIR/docker-compose.yml" << COMPOSE_EOF
 services:
   traefik:
     image: traefik:v3.0
@@ -320,252 +375,129 @@ services:
       - ${NETWORK_NAME}
     restart: unless-stopped
     environment:
-      - TZ=Africa/Tunis
+      - TZ=${TZ}
     labels:
       - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(\`traefik.${DOMAIN}\`) || (Host(\`localhost\`) && PathPrefix(\`/api\`))"
+      - "traefik.http.routers.api.service=api@internal"
+      - "traefik.http.routers.api.middlewares=dashboard-auth"
+      - "traefik.http.routers.api.tls=true"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 networks:
   ${NETWORK_NAME}:
     external: true
-EOF
+COMPOSE_EOF
 
-    success "Configuration Traefik générée"
+    run_cmd "Démarrage de Traefik" bash -c "cd '$TRAEFIK_DIR' && docker compose up -d"
 }
 
-# ============================================
-# ÉTAPE 4: METTRE À JOUR LES SERVICES
-# ============================================
 update_services() {
-    log "Mise à jour des services AI Suite avec le domaine $DOMAIN..."
+    log "Mise à jour des services avec le domaine ${DOMAIN}..."
 
     # Code-Server
     if [[ -f "$AI_SUITE_DIR/code-server/docker-compose.yml" ]]; then
-        cat > "$AI_SUITE_DIR/code-server/docker-compose.yml" << EOF
-version: '3.8'
-services:
-  code-server:
-    image: lscr.io/linuxserver/code-server:latest
-    container_name: code-server
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Africa/Tunis
-      - PASSWORD=${CODE_SERVER_PASSWORD:-$(openssl rand -base64 24)}
-      - SUDO_PASSWORD=${CODE_SERVER_PASSWORD:-changeme_now}
-      - DEFAULT_WORKSPACE=/config/workspace
-    volumes:
-      - ./config:/config
-      - ./projects:/projects
-    networks:
-      - ${NETWORK_NAME}
-    restart: unless-stopped
-    mem_limit: 2g
-    mem_reservation: 512m
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.code-server.rule=Host(\`code.${DOMAIN}\`)"
-      - "traefik.http.routers.code-server.tls=true"
-      - "traefik.http.services.code-server.loadbalancer.server.url=http://code-server:8443"
-networks:
-  ${NETWORK_NAME}:
-    external: true
-EOF
-        success "Code-Server configuré pour code.${DOMAIN}"
+        sed -i "s/Host(\`code\..*\`)/Host(\`code.${DOMAIN}\`)/g" \
+            "$AI_SUITE_DIR/code-server/docker-compose.yml"
+        log_success "Code-Server mis à jour pour code.${DOMAIN}"
     fi
 
     # Ollama
     if [[ -f "$AI_SUITE_DIR/ollama/docker-compose.yml" ]]; then
-        cat > "$AI_SUITE_DIR/ollama/docker-compose.yml" << EOF
-version: '3.8'
-services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    volumes:
-      - ollama:/root/.ollama
-    networks:
-      - ${NETWORK_NAME}
-    restart: unless-stopped
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-    deploy:
-      resources:
-        limits:
-          memory: 8g
-        reservations:
-          memory: 4g
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.ollama.rule=Host(\`ollama.${DOMAIN}\`)"
-      - "traefik.http.routers.ollama.tls=true"
-networks:
-  ${NETWORK_NAME}:
-    external: true
-volumes:
-  ollama:
-    driver: local
-EOF
-        success "Ollama configuré pour ollama.${DOMAIN}"
+        sed -i "s/Host(\`ollama\..*\`)/Host(\`ollama.${DOMAIN}\`)/g" \
+            "$AI_SUITE_DIR/ollama/docker-compose.yml"
+        log_success "Ollama mis à jour pour ollama.${DOMAIN}"
     fi
 
     # Open WebUI
     if [[ -f "$AI_SUITE_DIR/open-webui/docker-compose.yml" ]]; then
-        cat > "$AI_SUITE_DIR/open-webui/docker-compose.yml" << EOF
-version: '3.8'
-services:
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
-    environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - WEBUI_SECRET_KEY=${WEBUI_SECRET:-$(openssl rand -hex 32)}
-      - ENABLE_SIGNUP=false
-      - ENABLE_COMMUNITY_SHARING=false
-    volumes:
-      - open-webui:/app/backend/data
-    networks:
-      - ${NETWORK_NAME}
-    restart: unless-stopped
-    depends_on:
-      - ollama
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.open-webui.rule=Host(\`chat.${DOMAIN}\`)"
-      - "traefik.http.routers.open-webui.tls=true"
-      - "traefik.http.services.open-webui.loadbalancer.server.url=http://open-webui:8080"
-networks:
-  ${NETWORK_NAME}:
-    external: true
-volumes:
-  open-webui:
-    driver: local
-EOF
-        success "Open WebUI configuré pour chat.${DOMAIN}"
+        sed -i "s/Host(\`chat\..*\`)/Host(\`chat.${DOMAIN}\`)/g" \
+            "$AI_SUITE_DIR/open-webui/docker-compose.yml"
+        log_success "Open WebUI mis à jour pour chat.${DOMAIN}"
     fi
+
+    # Redémarrer les services
+    for service_dir in "$AI_SUITE_DIR"/code-server "$AI_SUITE_DIR"/ollama "$AI_SUITE_DIR"/open-webui; do
+        if [[ -f "$service_dir/docker-compose.yml" ]]; then
+            run_cmd "Redémarrage de $(basename "$service_dir")" \
+                bash -c "cd '$service_dir' && docker compose up -d"
+        fi
+    done
 }
 
-# ============================================
-# ÉTAPE 5: CONNECTER LES SERVICES EXISTANTS
-# ============================================
 connect_existing_services() {
     log "Connexion des services existants au réseau ${NETWORK_NAME}..."
 
-    # Connecter Coolify au réseau ai-suite
-    if docker ps --format '{{.Names}}' | grep -q "^coolify$"; then
-        docker network connect "$NETWORK_NAME" coolify 2>/dev/null && \
-            success "Coolify connecté au réseau ${NETWORK_NAME}" || \
-            warn "Coolify déjà connecté ou erreur"
-    fi
-
-    # Connecter donbosco_nginx au réseau ai-suite
-    if docker ps --format '{{.Names}}' | grep -q "donbosco_nginx"; then
-        docker network connect "$NETWORK_NAME" donbosco_nginx 2>/dev/null && \
-            success "donbosco_nginx connecté au réseau ${NETWORK_NAME}" || \
-            warn "donbosco_nginx déjà connecté ou erreur"
-    fi
-
-    # Connecter donbosco_api si présent
-    if docker ps --format '{{.Names}}' | grep -q "donbosco_api"; then
-        docker network connect "$NETWORK_NAME" donbosco_api 2>/dev/null || true
-    fi
-}
-
-# ============================================
-# ÉTAPE 6: DÉMARRER LES SERVICES
-# ============================================
-start_services() {
-    log "Démarrage des services..."
-
-    # Démarrer Traefik
-    cd "$TRAEFIK_DIR" && docker compose up -d
-    success "Traefik démarré"
-
-    # Démarrer les services AI Suite
-    for service_dir in "$AI_SUITE_DIR"/code-server "$AI_SUITE_DIR"/ollama "$AI_SUITE_DIR"/open-webui; do
-        if [[ -f "$service_dir/docker-compose.yml" ]]; then
-            cd "$service_dir" && docker compose up -d 2>/dev/null || \
-                warn "Impossible de démarrer $(basename "$service_dir")"
+    for container in coolify donbosco_nginx donbosco_api; do
+        if docker_service_running "$container"; then
+            run_cmd_quiet "Connexion de ${container}" \
+                docker network connect "$NETWORK_NAME" "$container" 2>/dev/null || true
         fi
     done
-
-    success "Tous les services démarrés"
 }
 
-# ============================================
-# ÉTAPE 7: RENOUVELLEMENT SSL
-# ============================================
 setup_ssl_renewal() {
     log "Configuration du renouvellement SSL..."
 
-    cat > "$TRAEFIK_DIR/renew-ssl.sh" << 'EOF'
+    cat > "$TRAEFIK_DIR/renew-ssl.sh" << 'RENEW_EOF'
 #!/bin/bash
 docker exec traefik traefik certificates rotate
 echo "$(date): Certificats renouvelés" >> /var/log/ssl-renewal.log
-EOF
+RENEW_EOF
     chmod +x "$TRAEFIK_DIR/renew-ssl.sh"
 
-    (crontab -l 2>/dev/null | grep -v "renew-ssl"
-     echo "0 3 * * * $TRAEFIK_DIR/renew-ssl.sh >> /var/log/ssl-renewal.log 2>&1") | crontab -
-
-    success "Renouvellement SSL configuré (cron: 3h tous les jours)"
+    if ! crontab -l 2>/dev/null | grep -q "renew-ssl"; then
+        (crontab -l 2>/dev/null; echo "0 3 * * * $TRAEFIK_DIR/renew-ssl.sh >> /var/log/ssl-renewal.log 2>&1") | crontab -
+    fi
 }
 
-# ============================================
-# ÉTAPE 8: EXPORTER LA CONFIG
-# ============================================
 export_config() {
-    cat > "$SCRIPT_DIR/.env" << EOF
+    cat > "$SCRIPT_DIR/.env" << ENV_EOF
 DOMAIN=${DOMAIN}
 SSL_EMAIL=${SSL_EMAIL}
 OLLAMA_PORT=${OLLAMA_PORT:-11434}
 CODE_SERVER_PORT=${CODE_SERVER_PORT:-8443}
 OPEN_WEBUI_PORT=${OPEN_WEBUI_PORT:-3000}
 COOLIFY_PORT=${COOLIFY_PORT:-8000}
-CODE_SERVER_PASSWORD=${CODE_SERVER_PASSWORD:-}
-WEBUI_SECRET=${WEBUI_SECRET:-}
 TRAEFIK_HTTP_PORT=80
 TRAEFIK_HTTPS_PORT=443
 NETWORK_NAME=${NETWORK_NAME}
 AI_SUITE_DIR=${AI_SUITE_DIR}
-EOF
+BACKUP_DIR=${BACKUP_DIR}
+RETENTION_DAYS=${RETENTION_DAYS}
+TZ=${TZ}
+ENV_EOF
     chmod 600 "$SCRIPT_DIR/.env"
-    success "Configuration exportée dans .env"
+    log_success "Configuration exportée dans .env"
 }
 
-# ============================================
-# RÉSUMÉ FINAL
-# ============================================
 show_summary() {
+    local ip
+    ip=$(get_public_ip)
+
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
     echo -e "${GREEN}✓ Configuration du domaine terminée avec succès !${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
     echo ""
     echo -e "${BOLD}Accès aux services :${NC}"
-    echo -e "  ────────────────────────────────────────────"
-    echo -e "  ${CYAN}Coolify${NC}      https://coolify.${DOMAIN}"
-    echo -e "  ${CYAN}Code-Server${NC}  https://code.${DOMAIN}"
-    echo -e "  ${CYAN}Ollama API${NC}   https://ollama.${DOMAIN}"
-    echo -e "  ${CYAN}Open WebUI${NC}   https://chat.${DOMAIN}"
-    if docker ps --format '{{.Names}}' | grep -q "donbosco"; then
-        echo -e "  ${CYAN}Don Bosco${NC}    https://donbosco.${DOMAIN}"
+    echo -e "  • Coolify:      https://coolify.${DOMAIN}"
+    echo -e "  • Code-Server:  https://code.${DOMAIN}"
+    echo -e "  • Ollama API:   https://ollama.${DOMAIN}"
+    echo -e "  • Open WebUI:   https://chat.${DOMAIN}"
+    if docker_service_running "donbosco_nginx"; then
+        echo -e "  • Don Bosco:    https://donbosco.${DOMAIN}"
     fi
     echo ""
-    echo -e "${BOLD}Traefik Dashboard :${NC}"
-    echo -e "  http://$(get_public_ip):8080"
+    echo -e "${BOLD}Traefik Dashboard :${NC} http://${ip}:8080"
     echo ""
     echo -e "${BOLD}${YELLOW}Prochaines étapes :${NC}"
-    echo -e "  1. Patientez pour la génération des certificats SSL (Let's Encrypt)"
-    echo -e "  2. Vérifiez: docker logs traefik | grep -i certificate"
-    echo -e "  3. Ajoutez de nouveaux projets dans leurs sous-domaines:"
-    echo -e "     https://monprojet.${DOMAIN}"
-    echo ""
-    echo -e "${BOLD}Nouveaux projets Docker :${NC}"
-    echo -e "  Ajoutez ces labels à vos conteneurs:"
-    echo -e "    - \"traefik.enable=true\""
-    echo -e "    - \"traefik.http.routers.monservice.rule=Host(\`monservice.${DOMAIN}\`)\""
-    echo -e "    - \"traefik.http.routers.monservice.tls=true\""
-    echo -e "    - \"traefik.http.routers.monservice.entrypoints=websecure\""
+    echo -e "  1. Vérifiez: docker logs traefik | grep -i certificate"
+    echo -e "  2. Ajoutez de nouveaux projets: https://monservice.${DOMAIN}"
     echo ""
 }
 
@@ -573,15 +505,17 @@ show_summary() {
 # POINT D'ENTRÉE
 # ============================================
 main() {
-    check_root
-    check_docker
+    setup_trap
+    parse_args "$@"
+    require_root
+    require_docker
+    load_env
 
     prompt_config
     prepare_system
     deploy_traefik
     update_services
     connect_existing_services
-    start_services
     setup_ssl_renewal
     export_config
     show_summary

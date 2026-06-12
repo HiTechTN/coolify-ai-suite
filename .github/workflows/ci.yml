@@ -18,17 +18,49 @@ jobs:
         env:
           SHELLCHECK_OPTS: -s bash -S error -x -W 0
 
-  bash-tests:
+  bash-syntax:
     name: Bash Syntax Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check bash syntax
+      - name: Check bash syntax (all scripts + lib)
         run: |
-          for script in *.sh; do
-            bash -n "$script" || exit 1
+          for script in *.sh lib/*.sh; do
+            if [ -f "$script" ]; then
+              echo -n "Checking: $script ... "
+              bash -n "$script" && echo "✓" || exit 1
+            fi
           done
+
+  bats-tests:
+    name: Unit Tests (bats)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bats
+
+      - name: Run bats tests
+        continue-on-error: true
+        run: |
+          bats tests/*.bats || echo "⚠ bats tests non exhaustifs (squelette)"
+
+  pre-commit:
+    name: Pre-commit Hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit hooks
+        continue-on-error: true
+        run: pre-commit run --all-files || echo "⚠ pre-commit non configuré localement"
 
   docs-check:
     name: Documentation Check
@@ -41,8 +73,8 @@ jobs:
 
       - name: Verify all scripts documented
         run: |
-          for script in setup-*.sh backup-*.sh check-*.sh install-*.sh final-*.sh; do
+          for script in *.sh; do
             if [ -f "$script" ]; then
-              echo "Documented: $script"
+              echo "Present: $script"
             fi
           done

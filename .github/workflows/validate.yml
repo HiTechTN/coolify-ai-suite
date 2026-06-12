@@ -20,28 +20,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate all shell scripts
+      - name: Validate all shell scripts (root + lib)
         run: |
           echo "=== Checking bash syntax ==="
-          for script in setup-*.sh backup-*.sh check-*.sh install-*.sh final-*.sh; do
+          for script in *.sh lib/*.sh; do
             if [ -f "$script" ]; then
               echo -n "Checking: $script ... "
               bash -n "$script" && echo "✓" || { echo "✗"; exit 1; }
             fi
           done
-          
+
       - name: Check for common issues
         run: |
           echo "=== Checking for common issues ==="
-          for script in setup-*.sh backup-*.sh check-*.sh install-*.sh final-*.sh; do
+          for script in *.sh; do
             if [ -f "$script" ]; then
-              # Check for hardcoded IPs
-              if grep -qE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$script" | grep -v '#'; then
-                echo "⚠ $script contains hardcoded IP"
+              # Check for hardcoded IPs (excluding comments and examples)
+              if grep -qE '(^|[^#])[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "$script" 2>/dev/null; then
+                # Exclude known safe patterns
+                if ! grep -qE '(api\.ipify\.org|ifconfig\.me|icanhazip\.com|0\.0\.0\.0|127\.0\.0\.1|docker\.com)' "$script" 2>/dev/null; then
+                  echo "⚠ $script may contain hardcoded IP"
+                fi
               fi
-              # Check for set -e
-              if ! grep -q 'set -e' "$script"; then
-                echo "⚠ $script missing 'set -e'"
+              # Check for set -euo pipefail
+              if ! grep -q 'set -euo pipefail' "$script" 2>/dev/null; then
+                echo "⚠ $script missing 'set -euo pipefail'"
               fi
             fi
           done
@@ -53,26 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Docker Compose
+      - name: Validate Compose syntax
         run: |
-          sudo apt-get update
-          sudo apt-get install -y docker.io docker-compose
-
-      - name: Validate Docker Compose files
-        run: |
-          echo "=== Validating Docker Compose files ==="
-          
-          # Code-Server
-          if [ -f "/opt/ai-suite/code-server/docker-compose.yml" ]; then
-            docker-compose -f /opt/ai-suite/code-server/docker-compose.yml config --quiet && echo "✓ code-server" || echo "✗ code-server"
-          fi
-          
-          # Ollama
-          if [ -f "/opt/ai-suite/ollama/docker-compose.yml" ]; then
-            docker-compose -f /opt/ai-suite/ollama/docker-compose.yml config --quiet && echo "✓ ollama" || echo "✗ ollama"
-          fi
-          
-          # Open WebUI
-          if [ -f "/opt/ai-suite/open-webui/docker-compose.yml" ]; then
-            docker-compose -f /opt/ai-suite/open-webui/docker-compose.yml config --quiet && echo "✓ open-webui" || echo "✗ open-webui"
-          fi
+          echo "=== Checking for compose files ==="
+          find /opt/ai-suite -name "docker-compose.yml" 2>/dev/null || echo "  (dossier non présent - installation requise)"

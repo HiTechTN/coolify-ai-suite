@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v3.0.0)'
+        required: true
+        default: 'v3.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax check
+        run: |
+          for f in *.sh lib/*.sh; do
+            bash -n "$f" && echo "  OK: $f" || { echo "FAIL: $f"; exit 1; }
+          done
+      - name: Check hardcoded IPs
+        run: |
+          ! grep -rnE '(^|[^#.0-9A-Za-z_-])[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}([^.:0-9A-Za-z_-]|$)' *.sh lib/*.sh 2>/dev/null | \
+            grep -vE '(api\.ipify|ifconfig\.me|icanhazip\.com|0\.0\.0\.0|127\.0\.0\.1|docker\.com|github\.com|nginx_ip|#|\*\.|\.domain\.)'
+
+  release:
+    needs: [validate]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      changelog: ${{ steps.changelog.outputs.changelog }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Extract CHANGELOG section
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          if [[ -f CHANGELOG.md ]]; then
+            awk "/^## \\[${VERSION#v}/,/^## \\[/" CHANGELOG.md | head -n -1 > release-notes.md
+          fi
+          if [[ ! -s release-notes.md ]]; then
+            git log --pretty=format:"- %s (%h)" "$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD" > release-notes.md
+          fi
+          {
+            echo 'changelog<<EOF'
+            cat release-notes.md
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build artifacts
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          ARCHIVE_DIR="coolify-ai-suite-${VERSION}"
+          mkdir -p "release-artifacts/${ARCHIVE_DIR}"
+
+          # Copy all project files (exclude unwanted dirs)
+          rsync -av --exclude='.git' --exclude='.opencode' --exclude='.qwen' \
+            --exclude='node_modules' --exclude='*.db' --exclude='*.db-*' \
+            --exclude='release-artifacts' --exclude='ollama-data' \
+            --exclude='open-webui-data' --exclude='prometheus-data' \
+            --exclude='grafana-data' . "release-artifacts/${ARCHIVE_DIR}/"
+
+          cd release-artifacts
+
+          # 1) Tarball
+          tar -czf "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}/"
+
+          # 2) ZIP
+          zip -r "${ARCHIVE_DIR}.zip" "${ARCHIVE_DIR}/"
+
+          # 3) Checksums
+          sha256sum "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}.zip" > checksums.txt
+          cat checksums.txt
+
+          # Copy back to repo root
+          cp "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}.zip" checksums.txt ../
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          draft: false
+          generate_release_notes: true
+          files: |
+            coolify-ai-suite-${{ steps.version.outputs.VERSION }}.tar.gz
+            coolify-ai-suite-${{ steps.version.outputs.VERSION }}.zip
+            checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,95 +1,178 @@
 #!/bin/bash
-# backup-ai-suite.sh - Sauvegarde et restauration Coolify AI Suite
+# backup-ai-suite.sh - Sauvegarde et restauration complète Coolify AI Suite
 # Author: Mohamed Azmi KAANICHE
-# Version: 1.0
+# Version: 2.0
+#
+# Usage: sudo ./backup-ai-suite.sh [options] <commande>
+#
+# Commandes:
+#   backup          Créer une sauvegarde complète
+#   restore FILE    Restaurer depuis une sauvegarde
+#   list            Lister les sauvegardes disponibles
+#   clean           Supprimer les anciennes sauvegardes
+#   status          Afficher le statut des volumes
+#
+# Options:
+#   -h, --help       Afficher cette aide
+#   --dry-run        Simuler sans sauvegarder
+#   --no-color       Désactiver les couleurs
+#   --log FILE       Fichier de log
+#   --version        Afficher la version
 
 set -euo pipefail
 
-# ============================================
-# COULEURS
-# ============================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/config.sh"
+
+LOG_FILE="/var/log/ai-suite-backup.log"
 
 # ============================================
-# CONFIGURATION
+# USAGE
 # ============================================
-readonly BACKUP_DIR="${BACKUP_DIR:-/opt/backups/ai-suite}"
-readonly AI_SUITE_DIR="/opt/ai-suite"
-readonly RETENTION_DAYS="${RETENTION_DAYS:-7}"
-
-# ============================================
-# FONCTIONS
-# ============================================
-log() { echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $1"; }
-success() { echo -e "${GREEN}✓${NC} $1"; }
-error() { echo -e "${RED}✗${NC} $1"; }
-
 usage() {
     cat << EOF
-Usage: $0 [COMMANDE]
+${BOLD}NAME${NC}
+    backup-ai-suite.sh — Sauvegarde et restauration complète
 
-Commandes:
-  backup          Créer une sauvegarde complète
-  restore FILE    Restaurer depuis une sauvegarde
-  list           Lister les sauvegardes disponibles
-  clean          Supprimer les anciennes sauvegardes
-  status         Afficher le statut des volumes
+${BOLD}SYNOPSIS${NC}
+    sudo ./backup-ai-suite.sh [OPTIONS] <COMMANDE>
 
-Exemples:
-  $0 backup                    # Sauvegarder maintenant
-  $0 restore backup_20260425.tar.gz  # Restaurer
-  $0 clean                      # Nettoyer les anciennes (>7 jours)
+${BOLD}COMMANDES${NC}
+    backup          Créer une sauvegarde complète
+    restore FILE    Restaurer depuis une sauvegarde
+    list            Lister les sauvegardes disponibles
+    clean           Supprimer les sauvegardes de plus de RETENTION_DAYS jours
+    status          Afficher le statut des volumes
+
+${BOLD}OPTIONS${NC}
+    -h, --help       Afficher cette aide
+    --dry-run        Simuler sans sauvegarder
+    --no-color       Désactiver les couleurs
+    --log FILE       Fichier de log
+    --version        Afficher la version
+
+${BOLD}EXEMPLES${NC}
+    sudo ./backup-ai-suite.sh backup
+    sudo ./backup-ai-suite.sh restore ai-suite_20260425.tar.gz
+    sudo ./backup-ai-suite.sh list
+    sudo ./backup-ai-suite.sh clean
 EOF
 }
 
+usage_function=usage
+
 # ============================================
-# SAUVEGARDE
+# PARSE DES ARGUMENTS
+# ============================================
+parse_args() {
+    local args=("$@")
+    local command=""
+    local rest=()
+
+    for arg in "${args[@]}"; do
+        case "$arg" in
+            -h|--help) usage; exit 0 ;;
+            --version) echo "Coolify AI Suite v${AI_SUITE_VERSION}"; exit 0 ;;
+            backup|restore|list|clean|status) command="$arg" ;;
+            --dry-run) DRY_RUN=true ;;
+            --no-color) NO_COLOR=true ;;
+            --log) ;;
+            *)
+                if [[ -z "$command" ]]; then
+                    log_error "Commande inconnue: ${arg}"
+                    usage
+                    exit 1
+                fi
+                rest+=("$arg")
+                ;;
+        esac
+    done
+
+    echo "$command"
+    if [[ ${#rest[@]} -gt 0 ]]; then
+        echo "${rest[@]}"
+    fi
+}
+
+# ============================================
+# SAUVEGARDE COMPLÈTE
 # ============================================
 do_backup() {
     local timestamp
     timestamp=$(date +%Y%m%d_%H%M%S)
     local backup_file="ai-suite_${timestamp}.tar.gz"
-    
-    log "Démarrage de la sauvegarde..."
+    local manifest_file="manifest_${timestamp}.txt"
+
+    log "Démarrage de la sauvegarde complète..."
     mkdir -p "$BACKUP_DIR"
-    
-    # Sauvegarder la configuration
-    log "Sauvegarde de la configuration..."
-    tar -czf "$BACKUP_DIR/$backup_file" \
-        -C /opt ai-suite \
-        --exclude='ai-suite/**/node_modules' \
-        --exclude='ai-suite/**/*.pyc' \
-        --exclude='ai-suite/code-server/config/__pycache__' \
-        2>/dev/null || true
-    
-    # Sauvegarder les volumes Docker
+
+    # 1. Configuration AI Suite
+    log "Sauvegarde de la configuration AI Suite..."
+    run_cmd "Compression de ${AI_SUITE_DIR}" \
+        tar -czf "${BACKUP_DIR}/${backup_file}" \
+            -C / \
+            opt/ai-suite \
+            --exclude='opt/ai-suite/**/node_modules' \
+            --exclude='opt/ai-suite/**/*.pyc' \
+            --exclude='opt/ai-suite/code-server/config/__pycache__' \
+            2>/dev/null || true
+
+    # 2. Volumes Docker
     log "Sauvegarde des volumes Docker..."
-    for volume in $(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^(ai-suite_|ollama|open-webui)'); do
-        local vol_backup="${volume}_${timestamp}.tar.gz"
-        docker run --rm \
-            -v "${volume}:/data" \
-            -v "${BACKUP_DIR}:/backup" \
-            alpine:latest \
-            tar -czf "/backup/${vol_backup}" -C / data
-        success "Volume $volume sauvegardé"
-    done
-    
-    # Manifeste
-    cat > "$BACKUP_DIR/manifest_${timestamp}.txt" << EOF
-BACKUP_DATE=$timestamp
-OLLAMA_PORT=${OLLAMA_PORT:-11434}
-CODE_SERVER_PORT=${CODE_SERVER_PORT:-8443}
-OPEN_WEBUI_PORT=${OPEN_WEBUI_PORT:-3000}
-COOLIFY_PORT=${COOLIFY_PORT:-8000}
-EOF
-    
-    success "Sauvegarde terminée: $BACKUP_DIR/$backup_file"
+    local volume_list
+    volume_list=$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^(ai-suite_|ollama|open-webui|coolify)' || true)
+    if [[ -n "$volume_list" ]]; then
+        for volume in $volume_list; do
+            local vol_backup="${volume}_${timestamp}.tar.gz"
+            run_cmd "Sauvegarde du volume ${volume}" \
+                docker run --rm \
+                    -v "${volume}:/data" \
+                    -v "${BACKUP_DIR}:/backup" \
+                    alpine:latest \
+                    tar -czf "/backup/${vol_backup}" -C / data
+        done
+    fi
+
+    # 3. Certificats SSL Traefik
+    if [[ -f "$TRAEFIK_DIR/acme/acme.json" ]]; then
+        log "Sauvegarde des certificats SSL..."
+        run_cmd "Copie de acme.json" \
+            cp "$TRAEFIK_DIR/acme/acme.json" "${BACKUP_DIR}/acme_${timestamp}.json"
+    fi
+
+    # 4. Crontabs
+    log "Sauvegarde des crontabs..."
+    crontab -l 2>/dev/null > "${BACKUP_DIR}/crontab_${timestamp}.txt" || true
+
+    # 5. Fichier .env
+    if [[ -f "$SCRIPT_DIR/.env" ]]; then
+        run_cmd "Copie de .env" \
+            cp "$SCRIPT_DIR/.env" "${BACKUP_DIR}/env_${timestamp}.txt"
+    fi
+
+    # 6. Liste des modèles Ollama
+    if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+        curl -s http://localhost:11434/api/tags | jq -r '.models[] | "\(.name) \(.size)"' \
+            > "${BACKUP_DIR}/ollama_models_${timestamp}.txt" 2>/dev/null || true
+        log_success "Liste des modèles Ollama sauvegardée"
+    fi
+
+    # 7. Manifeste
+    cat > "${BACKUP_DIR}/${manifest_file}" << MANIFEST_EOF
+BACKUP_DATE=${timestamp}
+AI_SUITE_VERSION=${AI_SUITE_VERSION}
+DOMAIN=${DOMAIN:-}
+OLLAMA_PORT=${OLLAMA_PORT}
+CODE_SERVER_PORT=${CODE_SERVER_PORT}
+OPEN_WEBUI_PORT=${OPEN_WEBUI_PORT}
+COOLIFY_PORT=${COOLIFY_PORT}
+TRAEFIK_ENABLED=$(docker_service_exists "traefik" && echo "true" || echo "false")
+MANIFEST_EOF
+
+    log_success "Sauvegarde terminée: ${BACKUP_DIR}/${backup_file}"
     echo ""
-    ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null | tail -5
+    ls -lh "${BACKUP_DIR}"/*.tar.gz 2>/dev/null | tail -5 || echo "  (aucun fichier)"
 }
 
 # ============================================
@@ -97,46 +180,96 @@ EOF
 # ============================================
 do_restore() {
     local backup_file="$1"
-    
+
     if [[ ! -f "$BACKUP_DIR/$backup_file" ]]; then
-        error "Fichier de sauvegarde non trouvé: $backup_file"
-        exit 1
+        # Essayer sans le chemin
+        backup_file="${BACKUP_DIR}/${backup_file}"
+        if [[ ! -f "$backup_file" ]]; then
+            log_error "Fichier de sauvegarde non trouvé: ${1}"
+            do_list
+            exit 1
+        fi
     fi
-    
-    log "Restauration depuis: $backup_file"
-    read -p "Cela écrasera les données actuelles. Continuer ? (o/N): " confirm
-    [[ "$confirm" != "o" && "$confirm" != "O" ]] && exit 0
-    
+
+    log "Restauration depuis: ${backup_file}"
+    echo -e "${YELLOW}⚠ Cela écrasera les données actuelles.${NC}"
+    read -p "Continuer ? (o/N): " confirm
+    [[ "$confirm" != "o" && "$confirm" != "O" ]] && { log_info "Restauration annulée"; exit 0; }
+
     # Arrêter les services
     log "Arrêt des services..."
-    cd "$AI_SUITE_DIR" 2>/dev/null
     for dir in code-server ollama open-webui; do
-        [[ -d "$AI_SUITE_DIR/$dir" ]] && docker compose -f "$AI_SUITE_DIR/$dir/docker-compose.yml" down 2>/dev/null || true
+        if [[ -d "$AI_SUITE_DIR/$dir" ]]; then
+            docker compose -f "$AI_SUITE_DIR/$dir/docker-compose.yml" down 2>/dev/null || true
+        fi
     done
-    
-    # Restaurer
+    docker compose -f "$TRAEFIK_DIR/docker-compose.yml" down 2>/dev/null || true
+
+    # Restaurer les fichiers
     log "Extraction des fichiers..."
-    tar -xzf "$BACKUP_DIR/$backup_file" -C /
-    
-    success "Restauration terminée"
+    tar -xzf "$backup_file" -C /
+
+    # Restaurer les volumes
+    local timestamp
+    timestamp=$(basename "$backup_file" | sed 's/ai-suite_//;s/\.tar\.gz//')
+    for vol_backup in "${BACKUP_DIR}"/*_"${timestamp}".tar.gz; do
+        [[ ! -f "$vol_backup" ]] && continue
+        local vol_name
+        vol_name=$(basename "$vol_backup" | sed "s/_${timestamp}\\.tar\\.gz//")
+        log "Restauration du volume ${vol_name}..."
+        docker volume create "${vol_name}" 2>/dev/null || true
+        docker run --rm \
+            -v "${vol_name}:/data" \
+            -v "${BACKUP_DIR}:/backup" \
+            alpine:latest \
+            tar -xzf "/backup/$(basename "$vol_backup")" -C / data
+    done
+
+    # Restaurer les certificats SSL
+    local acme_backup="${BACKUP_DIR}/acme_${timestamp}.json"
+    if [[ -f "$acme_backup" ]]; then
+        mkdir -p "$TRAEFIK_DIR/acme"
+        cp "$acme_backup" "$TRAEFIK_DIR/acme/acme.json"
+        chmod 600 "$TRAEFIK_DIR/acme/acme.json"
+        log_success "Certificats SSL restaurés"
+    fi
+
+    # Redémarrer les services
+    log "Redémarrage des services..."
+    for dir in "$TRAEFIK_DIR" "$AI_SUITE_DIR"/code-server "$AI_SUITE_DIR"/ollama "$AI_SUITE_DIR"/open-webui; do
+        if [[ -f "$dir/docker-compose.yml" ]]; then
+            docker compose -f "$dir/docker-compose.yml" up -d 2>/dev/null || true
+        fi
+    done
+
+    log_success "Restauration terminée"
 }
 
 # ============================================
-# LISTE DES SAUVEGARDES
+# LISTE
 # ============================================
 do_list() {
-    log "Sauvegardes disponibles dans $BACKUP_DIR:"
+    log "Sauvegardes disponibles dans ${BACKUP_DIR}:"
     echo ""
-    ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null | awk '{print "  " $9, "(" $5 ")"}' || echo "  Aucune sauvegarde"
+    if ls -lh "${BACKUP_DIR}"/*.tar.gz 2>/dev/null; then
+        echo ""
+        log_info "Pour restaurer: sudo ./backup-ai-suite.sh restore <fichier>"
+    else
+        echo "  Aucune sauvegarde trouvée"
+    fi
 }
 
 # ============================================
 # NETTOYAGE
 # ============================================
 do_clean() {
-    log "Suppression des sauvegardes de plus de $RETENTION_DAYS jours..."
-    find "$BACKUP_DIR" -name "*.tar.gz" -mtime "+$RETENTION_DAYS" -delete
-    success "Nettoyage terminé"
+    log "Suppression des sauvegardes de plus de ${RETENTION_DAYS} jours..."
+    local count
+    count=$(find "$BACKUP_DIR" -name "*.tar.gz" -mtime "+${RETENTION_DAYS}" 2>/dev/null | wc -l)
+    find "$BACKUP_DIR" -name "*.tar.gz" -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
+    find "$BACKUP_DIR" -name "manifest_*.txt" -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
+    find "$BACKUP_DIR" -name "acme_*.json" -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
+    log_success "${count} sauvegarde(s) supprimée(s)"
 }
 
 # ============================================
@@ -144,21 +277,44 @@ do_clean() {
 # ============================================
 do_status() {
     log "Statut des volumes Docker:"
-    docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^(ai-suite_|ollama|open-webui)' | while read vol; do
-        local size
-        size=$(docker volume inspect "$vol" --format '{{.Size}}' 2>/dev/null || echo "unknown")
-        echo "  • $vol: $size"
-    done
+    echo ""
+    docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^(ai-suite_|ollama|open-webui|coolify)' | \
+        while read -r vol; do
+            echo "  • $vol"
+        done
+    echo ""
+    log_info "Taille du dossier de sauvegarde:"
+    du -sh "$BACKUP_DIR" 2>/dev/null || echo "  (dossier inexistant)"
 }
 
 # ============================================
 # POINT D'ENTRÉE
 # ============================================
-case "${1:-}" in
-    backup)  do_backup ;;
-    restore) [[ -z "$2" ]] && { error "Spécifiez le fichier: $0 restore FILE"; exit 1; }; do_restore "$2" ;;
-    list)    do_list ;;
-    clean)   do_clean ;;
-    status)  do_status ;;
-    *)       usage ;;
-esac
+main() {
+    local args
+    args=$(parse_args "$@")
+
+    require_root
+
+    local command="${args%% *}"
+    local rest="${args#* }"
+
+    case "$command" in
+        backup)  do_backup ;;
+        restore)
+            local file="${rest#* }"
+            if [[ -z "$file" ]]; then
+                log_error "Spécifiez le fichier: $0 restore FILE"
+                usage
+                exit 1
+            fi
+            do_restore "$file"
+            ;;
+        list)    do_list ;;
+        clean)   do_clean ;;
+        status)  do_status ;;
+        *)       usage ;;
+    esac
+}
+
+main "$@"

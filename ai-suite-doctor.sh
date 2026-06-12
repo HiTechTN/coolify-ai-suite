@@ -278,8 +278,8 @@ check_backups() {
 # POINT D'ENTRÉE
 # ============================================
 main() {
-    local remaining
-    remaining=$(parse_common_args "$@")
+    parse_common_args "$@"
+    local remaining="${_COMMON_REMAINING:-}"
 
     for arg in $remaining; do
         case "$arg" in

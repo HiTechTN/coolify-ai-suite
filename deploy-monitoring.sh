@@ -54,8 +54,8 @@ WITH_GRAFANA=false
 REMOVE=false
 
 parse_args() {
-    local remaining
-    remaining=$(parse_common_args "$@")
+    parse_common_args "$@"
+    local remaining="${_COMMON_REMAINING:-}"
 
     for arg in $remaining; do
         case "$arg" in

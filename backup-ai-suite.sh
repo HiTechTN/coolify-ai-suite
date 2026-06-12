@@ -72,8 +72,6 @@ parse_args() {
 
     for arg in "${args[@]}"; do
         case "$arg" in
-            -h|--help) usage; exit 0 ;;
-            --version) echo "Coolify AI Suite v${AI_SUITE_VERSION}"; exit 0 ;;
             backup|restore|list|clean|status) command="$arg" ;;
             --dry-run) DRY_RUN=true ;;
             --no-color) NO_COLOR=true ;;
@@ -291,6 +289,11 @@ do_status() {
 # POINT D'ENTRÉE
 # ============================================
 main() {
+    # Handle help/version before parse_args (évite subshell exit bug)
+    for arg in "$@"; do
+        case "$arg" in -h|--help) usage; exit 0 ;; --version) echo "Coolify AI Suite v${AI_SUITE_VERSION}"; exit 0 ;; esac
+    done
+
     local args
     args=$(parse_args "$@")
 

@@ -74,8 +74,8 @@ parse_args() {
         esac
     done
 
-    local remaining
-    remaining=$(parse_common_args "$@")
+    parse_common_args "$@"
+    local remaining="${_COMMON_REMAINING:-}"
 
     if [[ -n "$remaining" ]]; then
         log_error "Argument inconnu: ${remaining}"

@@ -11,7 +11,7 @@ jobs:
     name: Shell Script Analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@master
@@ -22,7 +22,7 @@ jobs:
     name: Bash Syntax Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check bash syntax (all scripts + lib)
         run: |
@@ -37,7 +37,7 @@ jobs:
     name: Unit Tests (bats)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install bats
         run: |
@@ -53,7 +53,7 @@ jobs:
     name: Pre-commit Hooks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install pre-commit
         run: pip install pre-commit
@@ -66,7 +66,7 @@ jobs:
     name: Documentation Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify README exists
         run: test -f README.md
